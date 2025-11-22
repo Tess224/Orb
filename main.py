@@ -95,7 +95,7 @@ def probe_jupiter_quote(
         
         # Make the request with API key in headers
         headers = {
-            'Authorization': f'Bearer {api_key}',
+            'x-api-key': api_key,
             'Content-Type': 'application/json'
         }
         
