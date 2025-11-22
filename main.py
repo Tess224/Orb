@@ -78,6 +78,12 @@ def probe_jupiter_quote(
         if not api_key:
             logger.error("JUPITER_API_KEY not found in environment variables")
             return None
+# Get API key from environment variable
+        api_key = os.environ.get('JUPITER_API_KEY')
+        print(f"DEBUG: API key loaded: {api_key[:10]}..." if api_key else "DEBUG: NO API KEY FOUND")  # ADD THIS LINE
+        if not api_key:
+            logger.error("JUPITER_API_KEY not found in environment variables")
+            return None
         
         # Build the Jupiter Ultra API URL
         url = (
