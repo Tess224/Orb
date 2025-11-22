@@ -81,7 +81,7 @@ def probe_jupiter_quote(
         
         # Build the Jupiter Ultra API URL
         url = (
-            f"https://api.jup.ag/ultra/v1/quote?"
+            f"https://api.jup.ag/ultra?"
             f"inputMint={input_mint}&"
             f"outputMint={output_mint}&"
             f"amount={amount_lamports}&"
