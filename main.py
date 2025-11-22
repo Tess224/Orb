@@ -68,51 +68,56 @@ def probe_jupiter_quote(
     direction: str
 ) -> Optional[Dict]:
     """
-    Makes a single probe request to Jupiter's quote API.
-    
-    This simulates what would happen if you tried to execute a trade
-    of a specific size right now. Jupiter searches across all Solana DEXs
-    to find the best execution path and tells us what price we'd get.
-    
-    Args:
-        input_mint: Token address being sold
-        output_mint: Token address being bought
-        amount_lamports: Amount to trade in smallest units
-        direction: 'buy' or 'sell' for logging purposes
-    
-    Returns:
-        Dict with execution price data, or None if probe fails
+    Makes a single probe request to Jupiter's Ultra API.
+    Now uses the new Ultra API with authentication.
     """
     try:
+        # Get API key from environment variable
+        api_key = os.environ.get('JUPITER_API_KEY')
+        if not api_key:
+            logger.error("JUPITER_API_KEY not found in environment variables")
+            return None
+        
+        # Build the Jupiter Ultra API URL
         url = (
-            f"https://quote-api.jup.ag/v6/quote?"
+            f"https://api.jup.ag/ultra/v1/quote?"
             f"inputMint={input_mint}&"
             f"outputMint={output_mint}&"
             f"amount={amount_lamports}&"
             f"slippageBps=50"
         )
         
-        # DEBUG: Log the URL we're calling
-        print(f"DEBUG: Calling Jupiter with URL: {url}")
+        # Add this debug line
+        print(f"DEBUG: Calling Jupiter Ultra API with URL: {url}")
         
-        response = requests.get(url, timeout=10)
+        # Make the request with API key in headers
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
         
-        # DEBUG: Log Jupiter's response
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        # Add debug output
         print(f"DEBUG: Jupiter response status: {response.status_code}")
-        print(f"DEBUG: Jupiter response body: {response.text[:500]}")  # First 500 chars
+        print(f"DEBUG: Jupiter response body: {response.text[:500]}")
         
         response.raise_for_status()
         data = response.json()
         
+        # Check if Jupiter returned an error
         if 'error' in data or not data:
             logger.error(f"Jupiter API error for {direction}: {data.get('error', 'Unknown')}")
             return None
         
+        # Extract the input and output amounts from Jupiter's response
         in_amount = float(data['inAmount'])
         out_amount = float(data['outAmount'])
         
+        # Calculate the execution price (rate of exchange)
         execution_price = out_amount / in_amount
         
+        # Get the price impact that Jupiter calculated
         price_impact_pct = abs(float(data.get('priceImpactPct', 0)))
         
         return {
