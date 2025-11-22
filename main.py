@@ -4,6 +4,7 @@ This server analyzes token slippage patterns to detect pre-pump and pre-dump sig
 by probing Jupiter's quote API and analyzing liquidity structure asymmetries.
 """
 
+import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
