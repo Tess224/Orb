@@ -36,6 +36,9 @@ MAX_HISTORICAL_MEASUREMENTS = 10
 
 BIRDEYE_API_KEY = os.environ.get('BIRDEYE_API_KEY')
 
+HELIUS_RPC = os.environ.get('HELIUS_RPC_URL')
+CHAINLINK_RPC = os.environ.get('CHAINLINK_RPC_URL')
+
 analysis_cache: Dict[str, Dict] = {}
 historical_slippage: Dict[str, List[Dict]] = {}
 
