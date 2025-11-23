@@ -827,6 +827,103 @@ def clear_cache():
         }
     }), 200
 
+# ============================================================================
+# TOKEN INFORMATION ENDPOINT
+# ============================================================================
+@app.route('/api/token/info', methods=['POST'])
+def get_token_info():
+    """
+    Endpoint to fetch token information by address or symbol.
+    
+    Request body should be JSON:
+    {
+        "identifier": "token_address_or_symbol",
+        "lookup_type": "address" or "symbol"
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "data": { ... token fields ... },
+        "cached": true/false,
+        "timestamp": 1234567890
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data or 'identifier' not in data:
+            logger.warning("⚠️ Request missing 'identifier' field")
+            return jsonify({
+                'success': False,
+                'error': 'Missing required field: identifier'
+            }), 400
+        
+        identifier = data['identifier'].strip()
+        lookup_type = data.get('lookup_type', 'address').lower()
+        
+        # Validate the lookup_type
+        if lookup_type not in ['address', 'symbol']:
+            return jsonify({
+                'success': False,
+                'error': 'lookup_type must be either "address" or "symbol"'
+            }), 400
+        
+        # Validate identifier is not empty
+        if not identifier:
+            return jsonify({
+                'success': False,
+                'error': 'identifier cannot be empty'
+            }), 400
+        
+        logger.info(f"📥 Token info request: {lookup_type}={identifier[:8]}...")
+        
+        # Check cache first
+        cached_data = get_cached_token_info(identifier)
+        if cached_data:
+            return jsonify({
+                'success': True,
+                'data': cached_data,
+                'cached': True,
+                'timestamp': int(time.time())
+            }), 200
+        
+        # Not in cache, fetch from dev.fun
+        token_data = fetch_token_from_devfun(identifier, lookup_type)
+        
+        if not token_data:
+            return jsonify({
+                'success': False,
+                'error': f'Token not found: {identifier}',
+                'cached': False,
+                'timestamp': int(time.time())
+            }), 404
+        
+        # Cache the result for future requests
+        set_cached_token_info(identifier, token_data)
+        
+        # Also cache by the contract address if we did a symbol lookup
+        # This way future address lookups for the same token hit the cache
+        if lookup_type == 'symbol' and token_data.get('contractAddress'):
+            set_cached_token_info(token_data['contractAddress'], token_data)
+        
+        logger.info(f"✅ Token info retrieved and cached: {token_data['symbol']}")
+        
+        return jsonify({
+            'success': True,
+            'data': token_data,
+            'cached': False,
+            'timestamp': int(time.time())
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error in get_token_info endpoint: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': int(time.time())
+        }), 500
+
 
 if __name__ == '__main__':
     logger.info("=" * 70)
