@@ -1154,6 +1154,17 @@ if __name__ == '__main__':
     logger.info("🚀 Starting Solana Token Analysis Backend Server")
     logger.info("=" * 70)
     
+# Verify RPC endpoints loaded
+    if HELIUS_RPC:
+        logger.info("✓ Helius RPC configured")
+    else:
+        logger.warning("✗ Helius RPC not configured")
+        
+    if CHAINLINK_RPC:
+        logger.info("✓ Chainlink RPC configured")
+    else:
+        logger.warning("✗ Chainlink RPC not configured")
+    
     logger.info(f"Cache duration: {CACHE_DURATION_SECONDS} seconds")
     logger.info(f"Probe sizes: {PROBE_SIZES_USD}")
     logger.info(f"Historical measurements kept: {MAX_HISTORICAL_MEASUREMENTS}")
