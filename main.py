@@ -1150,6 +1150,13 @@ if __name__ == '__main__':
     logger.info("=" * 70)
     logger.info("🚀 Starting Solana Token Analysis Backend Server")
     logger.info("=" * 70)
+
+# Verify environment variables loaded (don't log the actual values!)
+    if BIRDEYE_API_KEY:
+        logger.info("✓ BirdEye API key loaded successfully")
+    else:
+        logger.error("✗ BirdEye API key not found in environment")
+    
     logger.info(f"Cache duration: {CACHE_DURATION_SECONDS} seconds")
     logger.info(f"Probe sizes: {PROBE_SIZES_USD}")
     logger.info(f"Historical measurements kept: {MAX_HISTORICAL_MEASUREMENTS}")
