@@ -210,6 +210,272 @@ def fetch_birdeye_trades_count(wallet_address: str) -> Optional[int]:
         logger.error(f"❌ Unexpected error fetching trades for {wallet_address[:8]}: {e}")
         return None
 
+# ============================================================================
+# PHASE 2: WALLET ANALYSIS SYSTEM - BLOCKCHAIN TRANSACTION PARSING
+# ============================================================================
+
+
+def get_wallet_transaction_signatures(wallet_address: str, limit: int = 100) -> List[Dict]:
+    """
+    Fetch transaction signatures for a wallet from the Solana blockchain.
+    
+    This function queries the blockchain to get a list of all transactions
+    this wallet has been involved in. We get signatures first (which are
+    like transaction IDs) and then fetch the full transaction details later.
+    This two-step process is more efficient than fetching everything at once.
+    
+    Args:
+        wallet_address: The Solana wallet address to query
+        limit: Maximum number of signatures to fetch (default 100)
+        
+    Returns:
+        List of signature objects with metadata like block time
+    """
+    try:
+        # Try Chainlink RPC first, fall back to Helius if it fails
+        rpc_url = CHAINLINK_RPC or HELIUS_RPC
+        
+        if not rpc_url:
+            logger.error("❌ No RPC URL configured for blockchain queries")
+            return []
+        
+        # Create a connection to the Solana blockchain
+        client = Client(rpc_url)
+        
+        # Convert the wallet address string to a Pubkey object
+        # Solana's Python library requires addresses as Pubkey objects
+        wallet_pubkey = Pubkey.from_string(wallet_address)
+        
+        logger.info(f"🔗 Fetching transaction signatures for {wallet_address[:8]}... (limit: {limit})")
+        
+        # Query the blockchain for transaction signatures
+        # This returns a list of signatures with metadata like block time
+        response = client.get_signatures_for_address(wallet_pubkey, limit=limit)
+        
+        if hasattr(response, 'value') and response.value:
+            signatures = response.value
+            logger.info(f"✅ Retrieved {len(signatures)} transaction signatures for {wallet_address[:8]}")
+            
+            # Convert the response objects to simple dictionaries for easier handling
+            sig_list = []
+            for sig in signatures:
+                sig_dict = {
+                    'signature': str(sig.signature),
+                    'blockTime': sig.block_time,
+                    'slot': sig.slot
+                }
+                sig_list.append(sig_dict)
+            
+            return sig_list
+        else:
+            logger.warning(f"⚠️ No transactions found for {wallet_address[:8]}")
+            return []
+            
+    except Exception as e:
+        logger.error(f"❌ Error fetching transaction signatures for {wallet_address[:8]}: {e}")
+        return []
+
+
+def fetch_parsed_transactions_batch(signatures: List[str], rpc_url: str) -> List[Optional[Dict]]:
+    """
+    Fetch full transaction data for a batch of signatures from the blockchain.
+    
+    This function takes a list of transaction signatures (IDs) and retrieves
+    the complete transaction data for each one. We do this in batches rather
+    than one at a time for efficiency. Each transaction contains detailed
+    information about what happened, including balance changes for all accounts.
+    
+    Args:
+        signatures: List of transaction signature strings
+        rpc_url: The RPC endpoint URL to query
+        
+    Returns:
+        List of parsed transaction objects (some may be None if fetch failed)
+    """
+    try:
+        client = Client(rpc_url)
+        transactions = []
+        
+        logger.info(f"📥 Fetching {len(signatures)} transactions in batch...")
+        
+        # Fetch each transaction individually
+        # Note: Some RPC providers support batch requests, but for simplicity
+        # and reliability, we fetch one at a time here
+        for idx, sig in enumerate(signatures):
+            try:
+                # Get the transaction with all details parsed into readable format
+                tx_response = client.get_transaction(
+                    sig,
+                    encoding="jsonParsed",
+                    max_supported_transaction_version=0
+                )
+                
+                if hasattr(tx_response, 'value') and tx_response.value:
+                    transactions.append(tx_response.value)
+                else:
+                    transactions.append(None)
+                    
+                # Log progress every 10 transactions so we can see it's working
+                if (idx + 1) % 10 == 0:
+                    logger.info(f"  ... fetched {idx + 1}/{len(signatures)} transactions")
+                    
+            except Exception as e:
+                logger.warning(f"  ⚠️ Failed to fetch transaction {sig[:8]}: {e}")
+                transactions.append(None)
+                
+            # Small delay to avoid overwhelming the RPC endpoint
+            time.sleep(0.1)
+        
+        success_count = sum(1 for tx in transactions if tx is not None)
+        logger.info(f"✅ Successfully fetched {success_count}/{len(signatures)} transactions")
+        
+        return transactions
+        
+    except Exception as e:
+        logger.error(f"❌ Error in batch transaction fetch: {e}")
+        return [None] * len(signatures)
+
+
+def parse_wallet_trades_from_transactions(
+    wallet_address: str,
+    transactions: List[Dict],
+    signatures_data: List[Dict]
+) -> Dict[str, Dict]:
+    """
+    Parse through transactions to identify token trades and build trading history.
+    
+    This is the complex heart of the transaction analysis system. We examine
+    each transaction to identify when the wallet bought or sold tokens by
+    looking at balance changes. A transaction where SOL decreased and tokens
+    increased is a buy. A transaction where tokens decreased and SOL increased
+    is a sell. We track all trades by token to build a complete picture.
+    
+    Args:
+        wallet_address: The wallet we're analyzing
+        transactions: List of parsed transaction objects
+        signatures_data: List of signature metadata (for timestamps)
+        
+    Returns:
+        Dictionary mapping token addresses to their trade data:
+        {
+            'TokenMintAddress': {
+                'buys': [list of buy transactions with amounts and timestamps],
+                'sells': [list of sell transactions with amounts and timestamps]
+            }
+        }
+    """
+    # This will store all trades organized by token
+    trades_by_token = {}
+    
+    logger.info(f"📊 Parsing {len(transactions)} transactions for trading activity...")
+    
+    for idx, tx in enumerate(transactions):
+        # Skip transactions that failed to fetch
+        if not tx or not hasattr(tx, 'transaction'):
+            continue
+        
+        try:
+            # Get the transaction's metadata including timestamp
+            sig_data = signatures_data[idx] if idx < len(signatures_data) else {}
+            block_time = sig_data.get('blockTime', 0)
+            
+            # Extract balance information from the transaction
+            # pre_balances and post_balances show what changed
+            meta = tx.meta
+            if not meta:
+                continue
+            
+            # Token balance changes are in preTokenBalances and postTokenBalances
+            pre_token_balances = meta.pre_token_balances or []
+            post_token_balances = meta.post_token_balances or []
+            
+            # SOL balance changes are in preBalances and postBalances
+            pre_balances = meta.pre_balances or []
+            post_balances = meta.post_balances or []
+            
+            # Find the account index for our wallet in the transaction
+            # Transactions involve multiple accounts, we need to find ours
+            account_keys = tx.transaction.message.account_keys
+            wallet_index = None
+            
+            for i, key in enumerate(account_keys):
+                if str(key) == wallet_address:
+                    wallet_index = i
+                    break
+            
+            if wallet_index is None:
+                continue  # Wallet not found in this transaction
+            
+            # Calculate SOL balance change for this wallet
+            sol_pre = pre_balances[wallet_index] if wallet_index < len(pre_balances) else 0
+            sol_post = post_balances[wallet_index] if wallet_index < len(post_balances) else 0
+            sol_change = (sol_post - sol_pre) / 1e9  # Convert lamports to SOL
+            
+            # Now look for token balance changes
+            for post_balance in post_token_balances:
+                # Only look at tokens owned by our wallet
+                if str(post_balance.owner) != wallet_address:
+                    continue
+                
+                token_mint = str(post_balance.mint)
+                
+                # Find the corresponding pre-balance for this token
+                pre_balance = None
+                for pb in pre_token_balances:
+                    if str(pb.mint) == token_mint and str(pb.owner) == wallet_address:
+                        pre_balance = pb
+                        break
+                
+                # Calculate token amount change
+                pre_amount = float(pre_balance.ui_token_amount.ui_amount) if pre_balance else 0.0
+                post_amount = float(post_balance.ui_token_amount.ui_amount)
+                token_change = post_amount - pre_amount
+                
+                # Skip if the change is negligible (dust)
+                if abs(token_change) < 0.000001:
+                    continue
+                
+                # Initialize tracking for this token if we haven't seen it before
+                if token_mint not in trades_by_token:
+                    trades_by_token[token_mint] = {
+                        'buys': [],
+                        'sells': []
+                    }
+                
+                # Classify the transaction as a buy or sell based on balance changes
+                # BUY: token balance increased, SOL balance decreased, and SOL change is significant
+                if token_change > 0 and sol_change < 0 and abs(sol_change) >= 0.05:
+                    trades_by_token[token_mint]['buys'].append({
+                        'tokenAmount': token_change,
+                        'solAmount': abs(sol_change),
+                        'timestamp': block_time,
+                        'value': abs(sol_change)  # Value in SOL
+                    })
+                    
+                # SELL: token balance decreased, SOL balance increased, and SOL change is significant
+                elif token_change < 0 and sol_change > 0 and sol_change >= 0.05:
+                    trades_by_token[token_mint]['sells'].append({
+                        'tokenAmount': abs(token_change),
+                        'solAmount': sol_change,
+                        'timestamp': block_time,
+                        'value': sol_change  # Value in SOL
+                    })
+        
+        except Exception as e:
+            # If parsing this transaction fails, log it but continue with others
+            logger.warning(f"  ⚠️ Error parsing transaction {idx}: {e}")
+            continue
+    
+    # Log summary of what we found
+    total_tokens = len(trades_by_token)
+    total_buys = sum(len(data['buys']) for data in trades_by_token.values())
+    total_sells = sum(len(data['sells']) for data in trades_by_token.values())
+    
+    logger.info(f"✅ Parsed trading history: {total_tokens} unique tokens, {total_buys} buys, {total_sells} sells")
+    
+    return trades_by_token
+
+
 def get_sol_price_usd() -> float:
     """
     Fetches the current price of SOL in USD from CoinGecko.
