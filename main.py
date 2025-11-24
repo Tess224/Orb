@@ -419,7 +419,7 @@ def parse_wallet_trades_from_transactions(
             transaction = getattr(tx, 'transaction', None)
             if not transaction:
                 continue
-            account_keys = transaction.message.account_keys
+            account_keys = transaction_data.message.account_keys
             wallet_index = None
             
             for i, key in enumerate(account_keys):
