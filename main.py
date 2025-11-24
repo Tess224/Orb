@@ -401,7 +401,10 @@ def parse_wallet_trades_from_transactions(
             
             # Find the account index for our wallet in the transaction
             # Transactions involve multiple accounts, we need to find ours
-            account_keys = tx.transaction.message.account_keys
+            transaction = getattr(tx, 'transaction', None)
+            if not transaction:
+                continue
+            account_keys = transaction.message.account_keys
             wallet_index = None
             
             for i, key in enumerate(account_keys):
