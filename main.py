@@ -15,7 +15,7 @@ import logging
 
 from solana.rpc.api import Client
 from solders.pubkey import Pubkey
-
+from solders.signature import Signature
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -308,8 +308,10 @@ def fetch_parsed_transactions_batch(signatures: List[str], rpc_url: str) -> List
         for idx, sig in enumerate(signatures):
             try:
                 # Get the transaction with all details parsed into readable format
+                sig_object = Signature.from_string(sig)
                 tx_response = client.get_transaction(
-                    sig,
+                    sig_object,
+
                     encoding="jsonParsed",
                     max_supported_transaction_version=0
                 )
