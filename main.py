@@ -479,6 +479,339 @@ def parse_wallet_trades_from_transactions(
     
     return trades_by_token
 
+# ============================================================================
+# PHASE 2: WALLET ANALYSIS SYSTEM - MAIN ANALYSIS FUNCTION
+# ============================================================================
+
+# Cache for wallet analysis results (24-hour TTL)
+wallet_analysis_cache: Dict[str, Dict] = {}
+WALLET_ANALYSIS_CACHE_TTL = 24 * 60 * 60  # 24 hours in seconds
+
+
+def calculate_wallet_iq(
+    wallet_address: str,
+    holding_percent: float = 0.0,
+    current_token_address: Optional[str] = None
+) -> Dict:
+    """
+    Calculate comprehensive intelligence metrics for a Solana wallet.
+    
+    This is the main wallet analysis function that orchestrates all the helper
+    functions we've built. It gathers data from multiple sources, applies
+    proprietary scoring algorithms, and returns a complete intelligence
+    assessment of the wallet's trading behavior and sophistication.
+    
+    The analysis includes:
+    - Overall IQ score (0-100) indicating trading sophistication
+    - Win rate percentage showing profitable trade ratio
+    - Trade count and activity level assessment  
+    - Trading pattern classification (Aggressive Winner, Calculated Trader, etc.)
+    - Hold score indicating patience and long-term strategy
+    - First buy time for the current token being analyzed
+    
+    Args:
+        wallet_address: The Solana wallet address to analyze
+        holding_percent: What percentage of a token this wallet holds (0-100)
+        current_token_address: Optional token address to track first buy time
+        
+    Returns:
+        Dictionary containing complete wallet intelligence metrics
+    """
+    try:
+        # Check if we have recent cached analysis for this wallet
+        cache_key = f"wallet_analysis:{wallet_address}"
+        if cache_key in wallet_analysis_cache:
+            cached = wallet_analysis_cache[cache_key]
+            cache_age = time.time() - cached['timestamp']
+            
+            if cache_age < WALLET_ANALYSIS_CACHE_TTL:
+                logger.info(f"💾 Using cached analysis for {wallet_address[:8]}... (age: {cache_age/3600:.1f}h)")
+                return cached['data']
+        
+        logger.info(f"🧠 Starting comprehensive analysis for wallet {wallet_address[:8]}...")
+        
+        # ====================================================================
+        # STEP 1: FETCH WIN RATE FROM BIRDEYE
+        # ====================================================================
+        
+        win_rate = fetch_birdeye_win_rate(wallet_address)
+        
+        # If BirdEye doesn't have win rate data, we'll calculate it ourselves
+        # from blockchain data later in the function
+        if win_rate is None:
+            logger.info(f"ℹ️ No BirdEye win rate data, will calculate from blockchain")
+            calculate_win_rate_from_chain = True
+        else:
+            calculate_win_rate_from_chain = False
+        
+        # ====================================================================
+        # STEP 2: FETCH TRADE COUNT FROM BIRDEYE
+        # ====================================================================
+        
+        trades_count = fetch_birdeye_trades_count(wallet_address)
+        
+        # If BirdEye doesn't have trade count, we'll count from blockchain data
+        if trades_count is None:
+            logger.info(f"ℹ️ No BirdEye trade count, will count from blockchain")
+            trades_count = 0
+            use_chain_trade_count = True
+        else:
+            use_chain_trade_count = False
+        
+        # ====================================================================
+        # STEP 3: FETCH AND PARSE BLOCKCHAIN TRANSACTIONS
+        # ====================================================================
+        
+        logger.info(f"📡 Fetching blockchain transaction history...")
+        
+        # Get transaction signatures from the blockchain
+        signatures_data = get_wallet_transaction_signatures(wallet_address, limit=100)
+        
+        if not signatures_data:
+            logger.warning(f"⚠️ No transaction history found for {wallet_address[:8]}")
+            # Return minimal analysis for wallets with no history
+            return {
+                'iq': 50,
+                'winRate': '0.0',
+                'trades': 0,
+                'tradesScore': 0,
+                'portfolio': 0,
+                'pattern': 'Unknown',
+                'holdScore': 0,
+                'firstBuyTime': None
+            }
+        
+        # Extract just the signature strings for fetching full transactions
+        signature_strings = [sig['signature'] for sig in signatures_data]
+        
+        # Fetch the full transaction data in batch
+        rpc_url = CHAINLINK_RPC or HELIUS_RPC
+        transactions = fetch_parsed_transactions_batch(signature_strings, rpc_url)
+        
+        # Parse the transactions to build trading history
+        trades_by_token = parse_wallet_trades_from_transactions(
+            wallet_address,
+            transactions,
+            signatures_data
+        )
+        
+        # ====================================================================
+        # STEP 4: CALCULATE WIN RATE FROM BLOCKCHAIN IF NEEDED
+        # ====================================================================
+        
+        if calculate_win_rate_from_chain and len(trades_by_token) > 0:
+            logger.info(f"📊 Calculating win rate from blockchain data...")
+            
+            # Look at the last 30 days of closed trades
+            thirty_days_ago = time.time() - (30 * 24 * 60 * 60)
+            
+            closed_trades = []
+            for token_mint, trade_data in trades_by_token.items():
+                # A closed trade has both buys and sells
+                if len(trade_data['buys']) > 0 and len(trade_data['sells']) > 0:
+                    # Check if any trades are within the last 30 days
+                    all_trades = trade_data['buys'] + trade_data['sells']
+                    recent_trades = [t for t in all_trades if t.get('timestamp', 0) >= thirty_days_ago]
+                    
+                    if recent_trades:
+                        closed_trades.append((token_mint, trade_data))
+            
+            # Calculate P&L for each closed position
+            winning_trades = 0
+            for token_mint, trade_data in closed_trades[:10]:  # Analyze up to 10 recent positions
+                try:
+                    recent_buys = [b for b in trade_data['buys'] if b.get('timestamp', 0) >= thirty_days_ago]
+                    recent_sells = [s for s in trade_data['sells'] if s.get('timestamp', 0) >= thirty_days_ago]
+                    
+                    if not recent_buys or not recent_sells:
+                        continue
+                    
+                    total_buy_value = sum(b.get('value', 0) for b in recent_buys)
+                    total_sell_value = sum(s.get('value', 0) for s in recent_sells)
+                    
+                    if total_buy_value > 0:
+                        pnl_percent = ((total_sell_value - total_buy_value) / total_buy_value) * 100
+                        if pnl_percent > 0:
+                            winning_trades += 1
+                            
+                except Exception as e:
+                    logger.warning(f"  ⚠️ Error calculating P&L for token: {e}")
+                    continue
+            
+            if len(closed_trades) > 0:
+                calculated_win_rate = (winning_trades / len(closed_trades)) * 100
+                win_rate = max(0.0, min(100.0, calculated_win_rate))
+                logger.info(f"  ✓ Calculated win rate: {win_rate:.1f}%")
+            else:
+                win_rate = 0.0
+        
+        # Default to 0 if we still don't have a win rate
+        if win_rate is None:
+            win_rate = 0.0
+        
+        # ====================================================================
+        # STEP 5: CALCULATE TRADE COUNT FROM BLOCKCHAIN IF NEEDED
+        # ====================================================================
+        
+        if use_chain_trade_count:
+            # Count all buys and sells across all tokens
+            total_trades = sum(
+                len(trade_data['buys']) + len(trade_data['sells'])
+                for trade_data in trades_by_token.values()
+            )
+            trades_count = total_trades
+            logger.info(f"  ✓ Counted {trades_count} trades from blockchain")
+        
+        # ====================================================================
+        # STEP 6: CALCULATE HOLD SCORE
+        # ====================================================================
+        
+        logger.info(f"⏱️ Calculating hold time patterns...")
+        
+        # Calculate average hold time across all tokens with closed positions
+        total_hold_time = 0
+        hold_time_samples = 0
+        
+        for token_mint, trade_data in trades_by_token.items():
+            if len(trade_data['buys']) > 0 and len(trade_data['sells']) > 0:
+                # Sort by timestamp
+                sorted_buys = sorted(trade_data['buys'], key=lambda x: x.get('timestamp', 0))
+                sorted_sells = sorted(trade_data['sells'], key=lambda x: x.get('timestamp', 0))
+                
+                # Calculate time between first buy and first sell
+                first_buy_time = sorted_buys[0].get('timestamp', 0)
+                first_sell_time = sorted_sells[0].get('timestamp', 0)
+                
+                if first_buy_time > 0 and first_sell_time > first_buy_time:
+                    hold_hours = (first_sell_time - first_buy_time) / 3600
+                    total_hold_time += hold_hours
+                    hold_time_samples += 1
+        
+        # Calculate average hold time in hours
+        avg_hold_hours = total_hold_time / hold_time_samples if hold_time_samples > 0 else 0
+        
+        # Convert hold time to hold score (0-50 points)
+        if avg_hold_hours < 8:
+            base_hold_score = 0  # Day trader / very short term
+        elif avg_hold_hours <= 24:
+            base_hold_score = 10  # Holds for a day
+        elif avg_hold_hours <= 72:
+            base_hold_score = 20  # Holds for a few days
+        elif avg_hold_hours <= 150:
+            base_hold_score = 30  # Holds for about a week
+        else:
+            base_hold_score = 50  # Long-term holder (week+)
+        
+        logger.info(f"  ✓ Average hold time: {avg_hold_hours:.1f} hours → score: {base_hold_score}")
+        
+        # ====================================================================
+        # STEP 7: CALCULATE TRADE FREQUENCY SCORE
+        # ====================================================================
+        
+        # Score based on trading frequency (fewer trades = more patient = higher score)
+        if trades_count <= 2:
+            trades_score = 100
+        elif trades_count <= 6:
+            trades_score = 85
+        elif trades_count <= 15:
+            trades_score = 60
+        elif trades_count <= 30:
+            trades_score = 35
+        elif trades_count <= 100:
+            trades_score = 10
+        else:
+            trades_score = 0
+        
+        logger.info(f"  ✓ Trade count: {trades_count} → score: {trades_score}")
+        
+        # ====================================================================
+        # STEP 8: CALCULATE HOLDING POSITION SCORE
+        # ====================================================================
+        
+        # Normalize holding percentage to 0-100 score
+        # Holding a significant portion (up to 30%) of a token is positive
+        normalized_holdings = min(100.0, max(0.0, (holding_percent / 30.0) * 100))
+        
+        # ====================================================================
+        # STEP 9: CALCULATE FINAL IQ SCORE
+        # ====================================================================
+        
+        # Weighted formula:
+        # - 70% weight on hold behavior (patience and long-term thinking)
+        # - 10% weight on win rate (profitability)
+        # - 10% weight on trade frequency (avoiding overtrading)
+        # - 10% weight on position size (conviction in holdings)
+        
+        final_iq = (
+            (base_hold_score / 50.0 * 100) * 0.70 +  # Normalize hold score to 0-100, then apply 70% weight
+            win_rate * 0.10 +
+            trades_score * 0.10 +
+            normalized_holdings * 0.10
+        )
+        
+        final_iq = int(max(0, min(100, final_iq)))  # Clamp to 0-100 range
+        
+        # ====================================================================
+        # STEP 10: CLASSIFY TRADING PATTERN
+        # ====================================================================
+        
+        if win_rate > 70:
+            pattern = 'Aggressive Winner'
+        elif win_rate > 50:
+            pattern = 'Calculated Trader'
+        else:
+            pattern = 'Degen Gambler'
+        
+        # ====================================================================
+        # STEP 11: FIND FIRST BUY TIME FOR CURRENT TOKEN
+        # ====================================================================
+        
+        first_buy_time = None
+        if current_token_address and current_token_address in trades_by_token:
+            token_trades = trades_by_token[current_token_address]
+            if len(token_trades['buys']) > 0:
+                sorted_buys = sorted(token_trades['buys'], key=lambda x: x.get('timestamp', 0))
+                first_buy_time = sorted_buys[0].get('timestamp')
+        
+        # ====================================================================
+        # STEP 12: BUILD FINAL RESULT
+        # ====================================================================
+        
+        result = {
+            'iq': final_iq,
+            'winRate': f"{win_rate:.1f}",
+            'trades': trades_count,
+            'tradesScore': trades_score,
+            'portfolio': 0,  # Could be enhanced with portfolio value calculation
+            'pattern': pattern,
+            'holdScore': base_hold_score,
+            'firstBuyTime': first_buy_time
+        }
+        
+        # Cache the result for 24 hours
+        wallet_analysis_cache[cache_key] = {
+            'data': result,
+            'timestamp': time.time()
+        }
+        
+        logger.info(f"✅ Analysis complete for {wallet_address[:8]}: IQ={final_iq}, WinRate={win_rate:.1f}%, Pattern={pattern}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Error analyzing wallet {wallet_address[:8]}: {e}")
+        # Return safe defaults on error
+        return {
+            'iq': 50,
+            'winRate': '0.0',
+            'trades': 0,
+            'tradesScore': 0,
+            'portfolio': 0,
+            'pattern': 'Unknown',
+            'holdScore': 0,
+            'firstBuyTime': None
+    }
+
 
 def get_sol_price_usd() -> float:
     """
