@@ -1483,6 +1483,115 @@ def clear_cache():
     }), 200
 
 
+# ============================================================================
+# WALLET ANALYSIS ENDPOINT
+# ============================================================================
+
+@app.route('/api/wallet/analyze', methods=['POST'])
+def analyze_wallet():
+    """
+    Endpoint to analyze a Solana wallet's trading intelligence.
+    
+    This endpoint provides comprehensive analysis of a wallet's trading behavior,
+    calculating an IQ score, win rate, trading patterns, and other metrics that
+    indicate whether the wallet belongs to smart money or a degen gambler.
+    
+    Request body should be JSON:
+    {
+        "wallet_address": "SolanaWalletAddressHere...",
+        "holding_percent": 0.0,  // Optional: what % of a token they hold
+        "current_token_address": "TokenAddressHere..."  // Optional: for tracking first buy
+    }
+    
+    Returns:
+    {
+        "success": true,
+        "data": {
+            "iq": 75,
+            "winRate": "65.5",
+            "trades": 15,
+            "tradesScore": 60,
+            "portfolio": 0,
+            "pattern": "Calculated Trader",
+            "holdScore": 30,
+            "firstBuyTime": 1234567890
+        },
+        "cached": true/false,
+        "timestamp": 1234567890
+    }
+    """
+    try:
+        # Parse the request body
+        data = request.get_json()
+        
+        if not data or 'wallet_address' not in data:
+            logger.warning("⚠️ Wallet analysis request missing 'wallet_address' field")
+            return jsonify({
+                'success': False,
+                'error': 'Missing required field: wallet_address'
+            }), 400
+        
+        wallet_address = data['wallet_address'].strip()
+        
+        # Validate wallet address format
+        # Solana addresses are 32-44 characters of base58 characters
+        if not wallet_address or len(wallet_address) < 32:
+            logger.warning(f"⚠️ Invalid wallet address format: {wallet_address}")
+            return jsonify({
+                'success': False,
+                'error': 'Invalid wallet address format'
+            }), 400
+        
+        # Extract optional parameters
+        holding_percent = float(data.get('holding_percent', 0.0))
+        current_token_address = data.get('current_token_address', None)
+        
+        logger.info(f"📥 Wallet analysis request: {wallet_address[:8]}...")
+        
+        # Check if we're returning cached data
+        cache_key = f"wallet_analysis:{wallet_address}"
+        is_cached = cache_key in wallet_analysis_cache
+        
+        if is_cached:
+            cache_age = time.time() - wallet_analysis_cache[cache_key]['timestamp']
+            logger.info(f"  💾 Will return cached data (age: {cache_age/3600:.1f}h)")
+        
+        # Perform the analysis (will use cache if available)
+        analysis_result = calculate_wallet_iq(
+            wallet_address,
+            holding_percent,
+            current_token_address
+        )
+        
+        # Build the response
+        response = {
+            'success': True,
+            'data': analysis_result,
+            'cached': is_cached,
+            'timestamp': int(time.time())
+        }
+        
+        logger.info(f"✅ Wallet analysis complete: {wallet_address[:8]} → IQ={analysis_result['iq']}")
+        
+        return jsonify(response), 200
+        
+    except ValueError as e:
+        logger.error(f"❌ Invalid input for wallet analysis: {e}")
+        return jsonify({
+            'success': False,
+            'error': f'Invalid input: {str(e)}',
+            'timestamp': int(time.time())
+        }), 400
+        
+    except Exception as e:
+        logger.error(f"❌ Error in wallet analysis endpoint: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Internal server error during wallet analysis',
+            'timestamp': int(time.time())
+        }), 500
+
+
 if __name__ == '__main__':
     logger.info("=" * 70)
     logger.info("🚀 Starting Solana Token Analysis Backend Server")
