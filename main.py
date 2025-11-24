@@ -394,10 +394,15 @@ def parse_wallet_trades_from_transactions(
             # Get the transaction's metadata including timestamp
             sig_data = signatures_data[idx] if idx < len(signatures_data) else {}
             block_time = sig_data.get('blockTime', 0)
-            
-            # Extract balance information from the transaction
-            # pre_balances and post_balances show what changed
-            meta = getattr(tx, 'meta', None)
+
+            # Extract the actual transaction and its metadata
+            # In solders library, transaction contains both the tx data and metadata
+            transaction_data = getattr(tx, 'transaction', None)
+            if not transaction_data:
+                continue
+                
+            # The metadata is inside the transaction object, not at the top level
+            meta = getattr(transaction_data, 'meta', None)
             if not meta:
                 continue
             
