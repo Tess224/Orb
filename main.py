@@ -387,7 +387,7 @@ def parse_wallet_trades_from_transactions(
             
             # Extract balance information from the transaction
             # pre_balances and post_balances show what changed
-            meta = tx.meta
+            meta = getattr(tx, 'meta', None)
             if not meta:
                 continue
             
