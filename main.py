@@ -41,6 +41,7 @@ CHAINLINK_RPC = os.environ.get('CHAINLINK_RPC_URL')
 
 analysis_cache: Dict[str, Dict] = {}
 historical_slippage: Dict[str, List[Dict]] = {}
+wallet_analysis_cache: Dict[str, Dict] = {}
 
 # ============================================================================
 # PHASE 2: WALLET ANALYSIS SYSTEM - BIRDEYE HELPERS
