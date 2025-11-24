@@ -379,6 +379,16 @@ def parse_wallet_trades_from_transactions(
         # Skip transactions that failed to fetch
         if not tx or not hasattr(tx, 'transaction'):
             continue
+
+        # TEMPORARY DIAGNOSTIC CODE - ADD THIS
+        if idx == 0:  # Only log the first transaction to avoid spam
+            logger.info(f"🔍 DEBUG: Transaction object type: {type(tx)}")
+            logger.info(f"🔍 DEBUG: Transaction attributes: {dir(tx)}")
+            if hasattr(tx, 'transaction'):
+                logger.info(f"🔍 DEBUG: Has 'transaction' attribute")
+            if hasattr(tx, 'meta'):
+                logger.info(f"🔍 DEBUG: Has 'meta' attribute")
+        # END TEMPORARY DIAGNOSTIC CODE
         
         try:
             # Get the transaction's metadata including timestamp
