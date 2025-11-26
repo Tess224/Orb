@@ -1114,65 +1114,46 @@ def analyze_slippage_patterns(slippage_data: Dict, token_address: str) -> Dict:
     
     logger.info(f"Average asymmetry ratio calculated: {avg_asymmetry:.3f}")
     
-    if avg_asymmetry > 2.5:
+    # === NEW CORRECTED LOGIC - Use the deepest probe for main signal ===
+    deep_probe = paired_probes[-1]  # The $5000 probe reveals true liquidity
+    deep_buy_slip = deep_probe['buy']['slippage_pct']
+    deep_sell_slip = deep_probe['sell']['slippage_pct']
+    deep_ratio = deep_sell_slip / (deep_buy_slip + 0.001)
+
+    # PATTERN 1: SUPPLY SHOCK (True Bullish Signal)
+    # High buy slippage (thin asks, price flies up) + Low sell slippage (strong bids)
+    if deep_ratio < 0.5 and deep_sell_slip < 1.0:
         analysis['patterns'].append({
-            'type': 'LIQUIDITY_FORTRESS',
-            'severity': 'CRITICAL',
-            'description': f'Extreme sell resistance - Asymmetry ratio {avg_asymmetry:.2f}x'
-        })
-        analysis['scores']['pre_pump_score'] += 40
-        analysis['confidence'] += 20
-        logger.info("✓ CRITICAL liquidity fortress pattern detected")
-        
-    elif avg_asymmetry > 2.0:
-        analysis['patterns'].append({
-            'type': 'LIQUIDITY_FORTRESS',
+            'type': 'SUPPLY_SHOCK',
             'severity': 'HIGH',
-            'description': f'Strong sell resistance - Asymmetry ratio {avg_asymmetry:.2f}x'
+            'description': f'Thin asks (buy: {deep_buy_slip:.1f}%) + Strong bids (sell: {deep_sell_slip:.1f}%). Bullish setup.'
         })
-        analysis['scores']['pre_pump_score'] += 30
-        analysis['confidence'] += 15
-        logger.info("✓ HIGH liquidity fortress pattern detected")
-        
-    elif avg_asymmetry > 1.7:
-        analysis['patterns'].append({
-            'type': 'LIQUIDITY_FORTRESS',
-            'severity': 'MEDIUM',
-            'description': f'Moderate sell resistance - Asymmetry ratio {avg_asymmetry:.2f}x'
-        })
-        analysis['scores']['pre_pump_score'] += 20
-        analysis['confidence'] += 10
-        logger.info("✓ MEDIUM liquidity fortress pattern detected")
-    
-    if avg_asymmetry < 0.4:
-        analysis['patterns'].append({
-            'type': 'LIQUIDITY_CLIFF',
-            'severity': 'CRITICAL',
-            'description': f'Extreme buy resistance - Asymmetry ratio {avg_asymmetry:.2f}x'
-        })
-        analysis['scores']['pre_dump_score'] += 40
+        analysis['scores']['pre_pump_score'] += 60
         analysis['confidence'] += 20
-        logger.info("✓ CRITICAL liquidity cliff pattern detected")
-        
-    elif avg_asymmetry < 0.5:
+        logger.info("✓ HIGH SUPPLY SHOCK detected - Genuine pump signal")
+
+    # PATTERN 2: LIQUIDITY TRAP (True Bearish Signal)
+    # High sell slippage (no bids, can't exit) + Low buy slippage (sell wall)
+    elif deep_ratio > 2.0:
         analysis['patterns'].append({
-            'type': 'LIQUIDITY_CLIFF',
-            'severity': 'HIGH',
-            'description': f'Strong buy resistance - Asymmetry ratio {avg_asymmetry:.2f}x'
+            'type': 'LIQUIDITY_TRAP',
+            'severity': 'CRITICAL',
+            'description': f'Thin bids (sell: {deep_sell_slip:.1f}%) + Sell wall (buy: {deep_buy_slip:.1f}%). Exit impossible.'
         })
-        analysis['scores']['pre_dump_score'] += 30
-        analysis['confidence'] += 15
-        logger.info("✓ HIGH liquidity cliff pattern detected")
-        
-    elif avg_asymmetry < 0.6:
+        analysis['scores']['pre_dump_score'] += 60
+        analysis['confidence'] += 20
+        logger.info("✓ CRITICAL LIQUIDITY TRAP detected - Rug risk")
+
+    # PATTERN 3: HONEYPOT CHECK
+    # If selling even $5k causes >10% slippage, the token is toxic
+    if deep_sell_slip > 10.0:
         analysis['patterns'].append({
-            'type': 'LIQUIDITY_CLIFF',
-            'severity': 'MEDIUM',
-            'description': f'Moderate buy resistance - Asymmetry ratio {avg_asymmetry:.2f}x'
+            'type': 'TOXIC_LIQUIDITY',
+            'severity': 'CRITICAL',
+            'description': f'Selling ${deep_probe["size_usd"]} causes {deep_sell_slip:.1f}% price crash. Honeypot risk.'
         })
-        analysis['scores']['pre_dump_score'] += 20
-        analysis['confidence'] += 10
-        logger.info("✓ MEDIUM liquidity cliff pattern detected")
+        analysis['scores']['pre_dump_score'] += 100  # Instant red flag
+        logger.info("🚨 TOXIC LIQUIDITY - Honeypot detected")
     
     if len(paired_probes) >= 4:
         early_buy_slip = paired_probes[1]['buy']['slippage_pct']
