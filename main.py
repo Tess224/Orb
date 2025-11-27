@@ -1114,118 +1114,119 @@ def probe_jupiter_quote(
 
 
 def probe_slippage_curve(token_address: str) -> Dict:
-    """
-    Probes Jupiter with multiple trade sizes to map the complete slippage curve.
-    
-    This is the core data collection function. We systematically test what would
-    happen if we tried to buy or sell increasing amounts of the token, which
-    reveals the underlying liquidity structure and any manipulation patterns.
-    
-    Args:
-        token_address: The Solana token address to analyze
-    
-    Returns:
-        Dict containing buy and sell slippage data at each probe size
-    
-    Raises:
-        Exception: If we can't get enough data to perform analysis
-    """
-    logger.info(f"Starting slippage curve probe for token {token_address[:8]}...")
-    
+    """Probes Jupiter with adaptive sizing based on actual pool liquidity."""
+    logger.info(f"=" * 70)
+    logger.info(f"Starting adaptive probe for {token_address[:8]}...")
+    logger.info(f"=" * 70)
+
     sol_price_usd = get_sol_price_usd()
+
+    # Get liquidity
+    liquidity_data = get_token_liquidity_simple(token_address)
     
-    logger.info("Establishing baseline price with micro-trade...")
-    baseline_probe = probe_jupiter_quote(
-        SOL_MINT,
-        token_address,
-        1_000_000,
-        'baseline'
-    )
+    liquidity_usd = liquidity_data['liquidity_usd']
+    market_cap_usd = liquidity_data.get('market_cap_usd')
+    source = liquidity_data['source']
     
+    logger.info(f"Liquidity: ${liquidity_usd:,.0f} (source: {source})")
+    if market_cap_usd:
+        logger.info(f"Market cap: ${market_cap_usd:,.0f}")
+    
+    tier = classify_liquidity_tier(liquidity_usd)
+    
+    # Get probe sizes
+    probe_configs = get_probe_sizes_for_liquidity(liquidity_usd, sol_price_usd)
+
+    # Baseline
+    logger.info("Establishing baseline...")
+    baseline_probe = probe_jupiter_quote(SOL_MINT, token_address, 1_000_000, 'baseline')
+
     if not baseline_probe or not baseline_probe['success']:
-        raise Exception("Could not establish baseline price - token may not be tradeable on Jupiter")
-    
+        raise Exception("Could not establish baseline")
+
     baseline_price = baseline_probe['execution_price']
-    logger.info(f"Baseline price established: {baseline_price:.10f}")
+    logger.info(f"✓ Baseline: {baseline_price:.10f}")
+
+    # Execute probes
+    logger.info(f"Executing {len(probe_configs)} probes...")
+    logger.info("-" * 70)
     
     paired_probes = []
-    
-    for probe_size_usd in PROBE_SIZES_USD:
-        sol_amount = probe_size_usd / sol_price_usd
-        lamports = int(sol_amount * 1_000_000_000)
+    stress_test_result = None
+
+    for idx, config in enumerate(probe_configs):
+        lamports = config['lamports']
+        probe_usd = config['usd_amount']
+        probe_type = config['probe_type']
+        pool_pct = config['percentage_of_pool']
         
-        logger.info(f"Probing BUY direction with ${probe_size_usd}...")
-        
-        buy_probe = probe_jupiter_quote(
-            SOL_MINT,
-            token_address,
-            lamports,
-            'buy'
-        )
-        
+        indicator = "🔥 STRESS" if probe_type == 'stress' else "📊 PROBE"
+        logger.info(f"{indicator} {idx + 1}: ${probe_usd:.0f} ({pool_pct:.1f}%)")
+
+        # BUY
+        buy_probe = probe_jupiter_quote(SOL_MINT, token_address, lamports, 'buy')
         if not buy_probe or not buy_probe['success']:
-            logger.warning(f"  ✗ BUY ${probe_size_usd} probe failed - skipping this size")
+            logger.warning(f"  ✗ BUY failed")
             time.sleep(0.3)
             continue
-        
-        buy_slippage_pct = abs(
-            ((buy_probe['execution_price'] - baseline_price) / baseline_price) * 100
-        )
-        
-        logger.info(f"  ✓ BUY ${probe_size_usd}: {buy_slippage_pct:.2f}% slippage")
-        
+
+        buy_slippage = abs(((buy_probe['execution_price'] - baseline_price) / baseline_price) * 100)
+        logger.info(f"  ✓ BUY: {buy_slippage:.2f}%")
         time.sleep(0.3)
-        
-        logger.info(f"Probing SELL direction with ${probe_size_usd}...")
-        
-        token_amount = int((sol_amount * baseline_price) * 1_000_000_000)
-        
-        sell_probe = probe_jupiter_quote(
-            token_address,
-            SOL_MINT,
-            token_amount,
-            'sell'
-        )
+
+        # SELL
+        token_amount = int((lamports / 1_000_000_000) * baseline_price * 1_000_000_000)
+        sell_probe = probe_jupiter_quote(token_address, SOL_MINT, token_amount, 'sell')
         
         if not sell_probe or not sell_probe['success']:
-            logger.warning(f"  ✗ SELL ${probe_size_usd} probe failed - skipping this size")
+            logger.warning(f"  ✗ SELL failed")
             time.sleep(0.3)
             continue
-        
+
         expected_price = 1 / baseline_price
-        sell_slippage_pct = abs(
-            ((sell_probe['execution_price'] - expected_price) / expected_price) * 100
-        )
+        sell_slippage = abs(((sell_probe['execution_price'] - expected_price) / expected_price) * 100)
+        logger.info(f"  ✓ SELL: {sell_slippage:.2f}%")
         
-        logger.info(f"  ✓ SELL ${probe_size_usd}: {sell_slippage_pct:.2f}% slippage")
-        
-        paired_probes.append({
-            'size_usd': probe_size_usd,
+        ratio = sell_slippage / (buy_slippage + 0.001)
+        logger.info(f"  → Ratio: {ratio:.2f}x")
+
+        result = {
+            'size_usd': probe_usd,
+            'probe_type': probe_type,
+            'percentage_of_pool': pool_pct,
             'buy': {
                 'execution_price': buy_probe['execution_price'],
-                'slippage_pct': buy_slippage_pct,
+                'slippage_pct': buy_slippage,
                 'price_impact_pct': buy_probe['price_impact_pct']
             },
             'sell': {
                 'execution_price': sell_probe['execution_price'],
-                'slippage_pct': sell_slippage_pct,
+                'slippage_pct': sell_slippage,
                 'price_impact_pct': sell_probe['price_impact_pct']
             }
-        })
+        }
+
+        if probe_type == 'stress':
+            stress_test_result = result
         
+        paired_probes.append(result)
+        logger.info("-" * 70)
         time.sleep(0.3)
-    
+
     if len(paired_probes) < 3:
-        raise Exception(
-            f"Insufficient probe data: only {len(paired_probes)} valid paired measurements. "
-            f"Token may have very low liquidity or Jupiter API is experiencing issues."
-        )
-    
-    logger.info(f"Probe complete: {len(paired_probes)} paired measurements collected")
-    
+        raise Exception(f"Insufficient data: {len(paired_probes)} probes")
+
+    logger.info(f"✅ Complete: {len(paired_probes)} measurements")
+    logger.info(f"=" * 70)
+
     return {
         'baseline_price': baseline_price,
         'paired_probes': paired_probes,
+        'stress_test': stress_test_result,
+        'tier': tier,
+        'liquidity_usd': liquidity_usd,
+        'market_cap_usd': market_cap_usd,
+        'liquidity_source': source,
         'timestamp': int(time.time())
     }
 
