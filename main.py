@@ -1333,16 +1333,42 @@ def analyze_slippage_patterns(slippage_data: Dict, token_address: str) -> Dict:
         analysis['confidence'] += 25
         logger.info("✓ CRITICAL LIQUIDITY TRAP detected - Rug risk")
 
-    # PATTERN 4: TOXIC LIQUIDITY / HONEYPOT
-    # If selling $5k causes >15% slippage, token is broken/scam
-    if deep_sell_slip > 15.0:
+    # === PATTERN 4: HONEYPOT DETECTION (TIER-AWARE) ===
+    tier = slippage_data.get('tier', 'SMALL')
+    
+    honeypot_thresholds = {
+        'MICRO': 40.0,
+        'SMALL': 25.0,
+        'MEDIUM': 15.0,
+        'LARGE': 10.0
+    }
+    
+    threshold = honeypot_thresholds.get(tier, 25.0)
+    
+    stress_test = slippage_data.get('stress_test')
+    
+    if stress_test:
+        stress_sell_slip = stress_test['sell']['slippage_pct']
+        
+        if stress_sell_slip > threshold:
+            analysis['patterns'].append({
+                'type': 'HONEYPOT_DETECTED',
+                'severity': 'CRITICAL',
+                'description': f'Stress test: {stress_sell_slip:.1f}% sell slippage (threshold: {threshold:.1f}% for {tier}). Honeypot.'
+            })
+            analysis['scores']['pre_dump_score'] += 100
+            analysis['is_honeypot'] = True
+            logger.info(f"🚨 HONEYPOT - {stress_sell_slip:.1f}% > {threshold:.1f}% ({tier})")
+    
+    if deep_sell_slip > threshold * 1.5:
         analysis['patterns'].append({
             'type': 'TOXIC_LIQUIDITY',
             'severity': 'CRITICAL',
-            'description': f'Selling ${deep_probe["size_usd"]} causes {deep_sell_slip:.1f}% crash. Honeypot/broken token.'
+            'description': f'Adaptive probe: {deep_sell_slip:.1f}% sell slippage. Broken token.'
         })
-        analysis['scores']['pre_dump_score'] += 100  # Instant fail
-        logger.info("🚨 TOXIC LIQUIDITY - Honeypot detected")
+        analysis['scores']['pre_dump_score'] += 100
+        analysis['is_honeypot'] = True
+        logger.info(f"🚨 TOXIC - {deep_sell_slip:.1f}%")
 
     # === TEMPORAL ANALYSIS (Detect Active Manipulation) ===
     if token_address in historical_slippage and len(historical_slippage[token_address]) > 0:
@@ -1435,6 +1461,7 @@ def classify_market_state(analysis: Dict) -> Dict:
     dump_score = analysis['scores']['pre_dump_score']
     confidence = analysis['confidence']
     patterns = analysis['patterns']
+    is_honeypot = analysis.get('is_honeypot', False)
     
     result = {
         'state': 'UNCERTAIN',
@@ -1454,6 +1481,16 @@ def classify_market_state(analysis: Dict) -> Dict:
     
     # PRIORITY 1: Dump signals (toxic liquidity, honeypots, rug pulls)
     # These take absolute priority to protect users
+    # PRIORITY 1.1: Honeypot (absolute priority)
+    if is_honeypot:
+        result['state'] = 'PRE_DUMP_HONEYPOT'
+        result['severity'] = 'CRITICAL'
+        result['timeframe'] = 'IMMEDIATE'
+        result['action'] = '🛑 HONEYPOT - CANNOT SELL'
+        logger.info("🎯 HONEYPOT DETECTED")
+        return result
+    
+    # PRIORITY 1.2: Other dump signals
     if dump_score >= 80:
         result['state'] = 'PRE_DUMP'
         result['severity'] = 'CRITICAL'
