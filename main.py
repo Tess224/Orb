@@ -1580,52 +1580,42 @@ def health():
 @app.route('/analyze', methods=['POST'])
 def analyze_token():
     """
-    Main analysis endpoint that your React app will call.
-    
-    Accepts a POST request with JSON body containing:
-    {
-        "token_address": "SolanaTokenAddressHere..."
-    }
-    
-    Returns complete analysis including state classification, confidence,
-    detected patterns, and recommended action.
+    Main analysis endpoint.
+    Orchestrates: Data Fetch -> Velocity Check -> Slippage Probe -> Pattern Analysis -> Classification
     """
     try:
+        # --- 1. INPUT VALIDATION ---
         # DEBUG: Log raw request data
         print("=" * 50)
         print("DEBUG: Request received")
         print(f"Content-Type: {request.headers.get('Content-Type')}")
-        print(f"Raw data: {request.data}")
-        print(f"Is JSON: {request.is_json}")
-        print("=" * 50)
         
-        # Get the token address from the request body
         data = request.get_json()
-        
         print(f"Parsed JSON: {data}")
-        
+
         if not data or 'token_address' not in data:
             logger.warning("Request missing token_address field")
             return jsonify({
                 'error': 'Missing required field: token_address',
                 'status': 'error'
             }), 400
-        
+
         token_address = data['token_address']
-        
+
         if not token_address or len(token_address) < 32:
             logger.warning(f"Invalid token address format: {token_address}")
             return jsonify({
                 'error': 'Invalid token address format',
                 'status': 'error'
             }), 400
-        
+
         logger.info(f"📥 Analysis request received for token: {token_address[:8]}...")
-        
+
+        # --- 2. CACHE CHECK ---
         if token_address in analysis_cache:
             cached = analysis_cache[token_address]
             cache_age = time.time() - cached['timestamp']
-            
+
             if cache_age < CACHE_DURATION_SECONDS:
                 logger.info(f"💾 Returning cached result (age: {cache_age:.0f}s)")
                 cached_result = cached['result'].copy()
@@ -1634,39 +1624,62 @@ def analyze_token():
                 return jsonify(cached_result), 200
             else:
                 logger.info(f"🔄 Cache expired (age: {cache_age:.0f}s), fetching fresh data")
+
+        # --- 3. FETCH DATA (LIQUIDITY & VOLUME) ---
+        logger.info("Step 1/3: Fetching Data...")
+        liq_data = get_token_liquidity_simple(token_address)
         
-        logger.info("Step 1/3: Probing slippage curve...")
+        # --- 4. CHECK VELOCITY (ZOMBIE DETECTOR) ---
+        velocity_analysis = analyze_velocity(liq_data['liquidity_usd'], liq_data['volume_24h_usd'])
+        
+        # --- 5. PROBE SLIPPAGE (STRUCTURE CHECK) ---
+        logger.info("Step 2/3: Probing Slippage...")
         slippage_data = probe_slippage_curve(token_address)
         
-        logger.info("Step 2/3: Analyzing patterns...")
+        # --- 6. ANALYZE PATTERNS (HISTORICAL DECAY + STRUCTURE) ---
+        logger.info("Step 3/3: Analyzing History & Patterns...")
         analysis = analyze_slippage_patterns(slippage_data, token_address)
         
-        logger.info("Step 3/3: Classifying market state...")
+        # --- 7. CLASSIFY MARKET STATE ---
         result = classify_market_state(analysis)
+
+        # --- 8. APPLY VELOCITY OVERRIDES ---
+        # If it's a Zombie, we must warn the user even if the slippage looks good
+        if velocity_analysis['status'] == 'ZOMBIE':
+            result['action'] = "⚠️ CAUTION: ZOMBIE TOKEN (No Volume)"
+            result['severity'] = 'LOW_VOL'
+            result['signals'].insert(0, "⛔ Low Velocity: Token is dead/inactive")
+            # Reduce confidence score significantly
+            result['confidence'] = max(0, result['confidence'] - 50)
         
-        buy_slippage = [{'size_usd': p['size_usd'], **p['buy']} for p in slippage_data['paired_probes']]
-        sell_slippage = [{'size_usd': p['size_usd'], **p['sell']} for p in slippage_data['paired_probes']]
-        
+        elif velocity_analysis['status'] == 'FRENZY':
+             result['signals'].insert(0, f"🔥 High Velocity ({velocity_analysis['ratio_percent']:.0f}%): Expect Volatility")
+
+        # Add Velocity Data to Final JSON response
+        result['velocity'] = velocity_analysis
+
+        # Prepare the Slippage Data section
         result['slippage_data'] = {
             'baseline_price': slippage_data['baseline_price'],
-            'buy_slippage': buy_slippage,
-            'sell_slippage': sell_slippage,
+            'buy_slippage': [{'size_usd': p['size_usd'], **p['buy']} for p in slippage_data['paired_probes']],
+            'sell_slippage': [{'size_usd': p['size_usd'], **p['sell']} for p in slippage_data['paired_probes']],
             'asymmetry': analysis['asymmetry']
         }
-        
+
         result['token_address'] = token_address
         result['timestamp'] = int(time.time())
         result['cached'] = False
-        
+
+        # Save to Cache
         analysis_cache[token_address] = {
             'result': result,
             'timestamp': time.time()
         }
-        
+
         logger.info(f"✅ Analysis complete and cached for {token_address[:8]}...")
-        
+
         return jsonify(result), 200
-        
+
     except Exception as e:
         logger.error(f"❌ Error during analysis: {str(e)}")
         return jsonify({
@@ -1674,6 +1687,7 @@ def analyze_token():
             'status': 'error',
             'timestamp': int(time.time())
         }), 500
+
 
 
 @app.route('/clear-cache', methods=['POST'])
