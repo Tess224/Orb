@@ -1539,6 +1539,55 @@ def classify_market_state(analysis: Dict) -> Dict:
     return result
 
 
+def analyze_velocity(liquidity_usd: float, volume_24h_usd: float) -> Dict:
+    """
+    Analyzes the 'Velocity' of the token to detect Zombie vs Active tokens.
+    Velocity Ratio = 24h Volume / Liquidity
+    """
+    if not liquidity_usd or liquidity_usd == 0:
+        return {'ratio': 0, 'status': 'UNKNOWN', 'description': 'No liquidity data'}
+    
+    # Calculate turnover
+    ratio = volume_24h_usd / liquidity_usd
+    ratio_percent = ratio * 100
+
+    result = {
+        'ratio': ratio,
+        'ratio_percent': ratio_percent,
+        'volume_usd': volume_24h_usd,
+        'liquidity_usd': liquidity_usd
+    }
+
+    # === VELOCITY RULES (Optimized for $200k-$1M MC) ===
+    
+    # 1. ZOMBIE (< 1.5%): Dead. Do not buy.
+    if ratio < 0.015: 
+        result['status'] = 'ZOMBIE'
+        result['health_score'] = 0
+        result['description'] = f"💀 ZOMBIE: Vol is {ratio_percent:.2f}% of Liq. Dead."
+        
+    # 2. LOW ACTIVITY (1.5% - 15%): Sleeping. Safe but slow.
+    elif ratio < 0.15:
+        result['status'] = 'LOW_ACTIVITY'
+        result['health_score'] = 50
+        result['description'] = f"💤 SLEEPING: Vol is {ratio_percent:.2f}% of Liq."
+
+    # 3. HEALTHY (15% - 200%): The Sweet Spot for Entry.
+    elif ratio <= 2.0:
+        result['status'] = 'HEALTHY'
+        result['health_score'] = 100
+        result['description'] = f"✅ HEALTHY: Vol is {ratio_percent:.0f}% of Liq. Good Activity."
+
+    # 4. FRENZY (> 200%): Dangerous volatility.
+    else:
+        result['status'] = 'FRENZY'
+        result['health_score'] = 70 
+        result['description'] = f"🔥 FRENZY: Vol is {ratio_percent:.0f}% of Liq. Extreme Risk."
+
+    logger.info(f"Velocity Check: {result['description']}")
+    return result
+
+
 @app.route('/')
 def home():
     """
