@@ -1232,16 +1232,14 @@ def probe_slippage_curve(token_address: str) -> Dict:
 
 def analyze_slippage_patterns(slippage_data: Dict, token_address: str) -> Dict:
     """
-    Analyzes slippage curve data to detect manipulation patterns.
-    
-    CORRECTED LOGIC:
-    - Supply Shock (Bullish) = High Buy Slip (thin asks) + Low Sell Slip (strong bids)
-    - Liquidity Trap (Bearish) = Low Buy Slip (sell wall) + High Sell Slip (no support)
+    MERGED LOGIC:
+    1. Detects Complex Manipulation (Fortress, Cliff, Honeypot)
+    2. Detects 'Silent Rugs' (Liquidity Decay over time)
     """
     logger.info("Analyzing slippage patterns for manipulation signals...")
 
     paired_probes = slippage_data['paired_probes']
-    
+
     if not paired_probes:
         return {
             'state': 'ERROR', 
@@ -1262,13 +1260,13 @@ def analyze_slippage_patterns(slippage_data: Dict, token_address: str) -> Dict:
         'timestamp': slippage_data['timestamp']
     }
 
-    # Calculate asymmetry ratios for ALL probe sizes (gives richer data)
+    # --- 1. CALCULATE ASYMMETRY ---
     asymmetry_ratios = []
     for probe in paired_probes:
         buy_slip = probe['buy']['slippage_pct']
         sell_slip = probe['sell']['slippage_pct']
         ratio = sell_slip / (buy_slip + 0.001)
-        
+
         asymmetry_ratios.append({
             'size_usd': probe['size_usd'],
             'ratio': ratio,
@@ -1276,169 +1274,128 @@ def analyze_slippage_patterns(slippage_data: Dict, token_address: str) -> Dict:
             'sell_slippage': sell_slip
         })
 
-    # Calculate average asymmetry across all probes
     avg_asymmetry = sum(item['ratio'] for item in asymmetry_ratios) / len(asymmetry_ratios)
-    
+
     analysis['asymmetry'] = {
         'average_ratio': avg_asymmetry,
         'ratios_by_size': asymmetry_ratios
     }
 
-    logger.info(f"Average asymmetry ratio calculated: {avg_asymmetry:.3f}")
-
-    # Use the DEEPEST probe ($5000) for the main stress test
+    # Get Deepest Probe (Stress Test)
     deep_probe = paired_probes[-1]
     deep_buy_slip = deep_probe['buy']['slippage_pct']
     deep_sell_slip = deep_probe['sell']['slippage_pct']
     deep_ratio = deep_sell_slip / (deep_buy_slip + 0.001)
 
-    # === PATTERN DETECTION (CORRECTED LOGIC) ===
+    # --- 2. PATTERN DETECTION (SNAPSHOT) ---
 
-    # PATTERN 1: SUPPLY SHOCK (True Bullish Signal)
-    # High buy slippage (thin asks, price flies up) + Low sell slippage (strong bids)
-    # Ratio < 0.5 means selling is EASIER than buying = bullish
+    # Supply Shock (Bullish)
     if deep_ratio < 0.5 and deep_sell_slip < 1.0:
         analysis['patterns'].append({
             'type': 'SUPPLY_SHOCK',
             'severity': 'HIGH',
-            'description': f'Thin asks (buy: {deep_buy_slip:.1f}%) + Strong bids (sell: {deep_sell_slip:.1f}%). Ratio: {deep_ratio:.2f}'
+            'description': f'Thin asks (buy: {deep_buy_slip:.1f}%) + Strong bids. Ratio: {deep_ratio:.2f}'
         })
         analysis['scores']['pre_pump_score'] += 60
         analysis['confidence'] += 20
-        logger.info("✓ HIGH SUPPLY SHOCK detected - Genuine pump signal")
 
-    # PATTERN 2: ACCUMULATION ZONE (Moderate Bullish)
-    # Both sides have low slippage = deep liquidity, smart money accumulating
+    # Accumulation (Bullish)
     elif deep_buy_slip < 1.0 and deep_sell_slip < 1.0 and avg_asymmetry < 1.2:
         analysis['patterns'].append({
             'type': 'WHALE_ACCUMULATION',
             'severity': 'MEDIUM',
-            'description': f'Deep liquidity both sides (buy: {deep_buy_slip:.1f}%, sell: {deep_sell_slip:.1f}%). Smart money zone.'
+            'description': 'Deep liquidity on both sides. Smart money zone.'
         })
         analysis['scores']['pre_pump_score'] += 20
-        analysis['confidence'] += 10
-        logger.info("✓ MEDIUM ACCUMULATION detected")
 
-    # PATTERN 3: LIQUIDITY TRAP (True Bearish Signal)
-    # High sell slippage (no bids, can't exit) + Low buy slippage (sell wall)
-    # Ratio > 2.0 means selling is HARDER than buying = bearish/rug setup
+    # Liquidity Trap (Bearish)
     if deep_ratio > 2.0:
         analysis['patterns'].append({
             'type': 'LIQUIDITY_TRAP',
             'severity': 'CRITICAL',
-            'description': f'Thin bids (sell: {deep_sell_slip:.1f}%) + Sell wall (buy: {deep_buy_slip:.1f}%). Ratio: {deep_ratio:.2f}'
+            'description': f'Sell Wall! Ratio: {deep_ratio:.2f}'
         })
         analysis['scores']['pre_dump_score'] += 60
         analysis['confidence'] += 25
-        logger.info("✓ CRITICAL LIQUIDITY TRAP detected - Rug risk")
 
-    # === PATTERN 4: HONEYPOT DETECTION (TIER-AWARE) ===
+    # --- 3. HONEYPOT / TOXIC CHECKS ---
     tier = slippage_data.get('tier', 'SMALL')
-    
-    honeypot_thresholds = {
-        'MICRO': 40.0,
-        'SMALL': 25.0,
-        'MEDIUM': 15.0,
-        'LARGE': 10.0
-    }
-    
+    honeypot_thresholds = {'MICRO': 40.0, 'SMALL': 25.0, 'MEDIUM': 15.0, 'LARGE': 10.0}
     threshold = honeypot_thresholds.get(tier, 25.0)
-    
+
     stress_test = slippage_data.get('stress_test')
-    
     if stress_test:
-        stress_sell_slip = stress_test['sell']['slippage_pct']
-        
-        if stress_sell_slip > threshold:
+        stress_sell = stress_test['sell']['slippage_pct']
+        if stress_sell > threshold:
             analysis['patterns'].append({
                 'type': 'HONEYPOT_DETECTED',
                 'severity': 'CRITICAL',
-                'description': f'Stress test: {stress_sell_slip:.1f}% sell slippage (threshold: {threshold:.1f}% for {tier}). Honeypot.'
+                'description': f'Stress test sell slippage {stress_sell:.1f}% > {threshold}%'
             })
             analysis['scores']['pre_dump_score'] += 100
             analysis['is_honeypot'] = True
-            logger.info(f"🚨 HONEYPOT - {stress_sell_slip:.1f}% > {threshold:.1f}% ({tier})")
-    
+
     if deep_sell_slip > threshold * 1.5:
-        analysis['patterns'].append({
-            'type': 'TOXIC_LIQUIDITY',
-            'severity': 'CRITICAL',
-            'description': f'Adaptive probe: {deep_sell_slip:.1f}% sell slippage. Broken token.'
-        })
+        analysis['patterns'].append({'type': 'TOXIC_LIQUIDITY', 'severity': 'CRITICAL', 'description': 'Toxic slippage levels.'})
         analysis['scores']['pre_dump_score'] += 100
         analysis['is_honeypot'] = True
-        logger.info(f"🚨 TOXIC - {deep_sell_slip:.1f}%")
 
-    # === TEMPORAL ANALYSIS (Detect Active Manipulation) ===
+    # --- 4. TEMPORAL ANALYSIS (HISTORY) ---
     if token_address in historical_slippage and len(historical_slippage[token_address]) > 0:
         history = historical_slippage[token_address]
-        previous_measurement = history[-1]
+        # Look back 2-3 cycles (~5 mins)
+        lookback_index = min(len(history), 3)
+        prev_analysis = history[-lookback_index]
 
-        # Check if this token had previous asymmetry data
-        if 'asymmetry' in previous_measurement:
-            previous_asymmetry = previous_measurement['asymmetry']['average_ratio']
-            asymmetry_change = avg_asymmetry - previous_asymmetry
+        # A. CHECK FOR COMPLEX MANIPULATION (The Original Logic)
+        if 'asymmetry' in prev_analysis:
+            prev_asymmetry = prev_analysis['asymmetry'].get('average_ratio', 0)
+            asymmetry_change = avg_asymmetry - prev_asymmetry
 
-            # ACTIVE FORTRESS BUILDING (Manipulation happening NOW)
             if asymmetry_change > 0.3:
-                analysis['patterns'].append({
-                    'type': 'ACTIVE_FORTRESS_BUILDING',
-                    'severity': 'CRITICAL',
-                    'description': f'Asymmetry increased {asymmetry_change:.2f} - Active manipulation detected'
-                })
+                analysis['patterns'].append({'type': 'ACTIVE_FORTRESS_BUILDING', 'severity': 'CRITICAL', 'description': 'Asymmetry rising rapidly.'})
                 analysis['scores']['pre_pump_score'] += 25
-                analysis['confidence'] += 15
                 analysis['manipulation_in_progress'] = True
-                logger.info("🚨 ACTIVE fortress building detected")
-
-            # ACTIVE SUPPORT COLLAPSE (Bids being pulled NOW)
             elif asymmetry_change < -0.3:
-                analysis['patterns'].append({
-                    'type': 'ACTIVE_CLIFF_CARVING',
-                    'severity': 'CRITICAL',
-                    'description': f'Asymmetry decreased {abs(asymmetry_change):.2f} - Liquidity being removed NOW'
-                })
+                analysis['patterns'].append({'type': 'ACTIVE_CLIFF_CARVING', 'severity': 'CRITICAL', 'description': 'Liquidity being pulled.'})
                 analysis['scores']['pre_dump_score'] += 35
-                analysis['confidence'] += 20
                 analysis['manipulation_in_progress'] = True
-                logger.info("🚨 ACTIVE cliff carving detected")
 
-        # Also check for rapid sell slippage increase (support being pulled)
-        if 'asymmetry' in previous_measurement and 'ratios_by_size' in previous_measurement['asymmetry']:
-            # Get the deepest probe from last measurement
-            prev_ratios = previous_measurement['asymmetry']['ratios_by_size']
+        # B. CHECK FOR SILENT RUG / LIQUIDITY DECAY (The New Logic)
+        # We need to extract the previous DEEP SELL SLIPPAGE
+        prev_deep_sell = 0
+        if 'asymmetry' in prev_analysis and 'ratios_by_size' in prev_analysis['asymmetry']:
+            prev_ratios = prev_analysis['asymmetry']['ratios_by_size']
             if prev_ratios:
-                prev_deep = prev_ratios[-1]
-                prev_sell_slip = prev_deep['sell_slippage']
-                
-                # If sell slippage doubled, support was pulled
-                if deep_sell_slip > (prev_sell_slip * 2.0) and deep_sell_slip > 2.0:
-                    analysis['patterns'].append({
-                        'type': 'SUPPORT_PULLED',
-                        'severity': 'HIGH',
-                        'description': f'Sell slippage jumped from {prev_sell_slip:.1f}% to {deep_sell_slip:.1f}%. Bids removed.'
-                    })
-                    analysis['scores']['pre_dump_score'] += 40
-                    logger.info("✓ SUPPORT PULLED detected via temporal analysis")
+                # Assuming the last item is the deepest probe
+                prev_deep_sell = prev_ratios[-1]['sell_slippage']
 
-    # === STORE CURRENT ANALYSIS IN HISTORY ===
+        if prev_deep_sell > 0:
+            slip_increase_pct = ((deep_sell_slip - prev_deep_sell) / prev_deep_sell) * 100
+            
+            # If sell slippage got 20% worse in 5 minutes -> DANGER
+            if slip_increase_pct > 20.0 and deep_sell_slip > 2.0:
+                analysis['patterns'].append({
+                    'type': 'LIQUIDITY_DECAY',
+                    'severity': 'CRITICAL',
+                    'description': f'SILENT RUG: Support crumbling! Slippage up {slip_increase_pct:.0f}%'
+                })
+                analysis['scores']['pre_dump_score'] += 75
+                analysis['confidence'] += 30
+                logger.info(f"🚨 LIQUIDITY DECAY DETECTED: +{slip_increase_pct:.1f}%")
+
+    # --- 5. SAVE HISTORY ---
     if token_address not in historical_slippage:
         historical_slippage[token_address] = []
-    
+
+    # We save the FULL analysis object so we can check it next time
     historical_slippage[token_address].append(analysis)
-    
-    # Keep only recent measurements
+
     if len(historical_slippage[token_address]) > MAX_HISTORICAL_MEASUREMENTS:
         historical_slippage[token_address].pop(0)
 
-    # Cap confidence at 95%
+    # Cap confidence
     analysis['confidence'] = min(analysis['confidence'], 95)
-
-    logger.info(
-        f"Analysis complete - Pre-pump: {analysis['scores']['pre_pump_score']}, "
-        f"Pre-dump: {analysis['scores']['pre_dump_score']}, "
-        f"Confidence: {analysis['confidence']}%"
-    )
 
     return analysis
 
