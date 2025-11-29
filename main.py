@@ -860,56 +860,56 @@ def get_sol_price_usd() -> float:
         return 150.0
     
 
-def get_token_liquidity_simple(token_address: str) -> Dict:
-    """Fetches liquidity from Birdeye with simple fallback."""
-    logger.info(f"Fetching liquidity data for {token_address[:8]}...")
-    
+        def get_token_liquidity_simple(token_address: str) -> Dict:
+    """Fetches liquidity AND Volume from Birdeye with simple fallback."""
+    logger.info(f"Fetching liquidity and volume data for {token_address[:8]}...")
+
     try:
         url = "https://public-api.birdeye.so/defi/token_overview"
         params = {'address': token_address}
         headers = {'X-API-KEY': BIRDEYE_API_KEY}
-        
+
         response = requests.get(url, params=params, headers=headers, timeout=8)
-        
+
         if response.status_code == 200:
             data = response.json()
-            
+
             if data.get('success'):
                 token_data = data.get('data', {})
                 liquidity = token_data.get('liquidity')
                 market_cap = token_data.get('mc')
-                
+                volume_24h = token_data.get('v24hUSD')  # <--- NEW: Grab Volume
+
                 if liquidity and liquidity > 0:
                     logger.info(f"✓ Birdeye liquidity: ${liquidity:,.0f}")
-                    if market_cap:
-                        logger.info(f"  Market cap: ${market_cap:,.0f}")
-                    
+                    if volume_24h:
+                        logger.info(f"✓ Birdeye 24h Vol: ${volume_24h:,.0f}")
+
                     return {
                         'liquidity_usd': float(liquidity),
                         'market_cap_usd': float(market_cap) if market_cap else None,
+                        'volume_24h_usd': float(volume_24h) if volume_24h else 0.0, # <--- Return Volume
                         'source': 'birdeye'
                     }
-    
+
     except Exception as e:
         logger.warning(f"Birdeye API error: {e}")
-    
-    logger.info("Falling back to market cap estimation...")
+
+    # Fallback (Volume is 0 for estimated data)
     market_cap = get_token_market_cap(token_address)
-    
     if market_cap:
         estimated_liquidity = estimate_liquidity_from_market_cap(market_cap)
-        logger.info(f"✓ Estimated liquidity: ${estimated_liquidity:,.0f}")
-        
         return {
             'liquidity_usd': estimated_liquidity,
             'market_cap_usd': market_cap,
+            'volume_24h_usd': 0.0,
             'source': 'estimated'
         }
-    
-    logger.warning("No data available - using default")
+
     return {
         'liquidity_usd': 25000,
         'market_cap_usd': None,
+        'volume_24h_usd': 0.0,
         'source': 'default'
     }
 
