@@ -859,7 +859,7 @@ def get_sol_price_usd() -> float:
         logger.warning("Using fallback SOL price of $150")
         return 150.0
     
- def get_token_liquidity_simple(token_address: str) -> Dict:
+def get_token_liquidity_simple(token_address: str) -> Dict:
     """Fetches liquidity AND Volume from Birdeye with simple fallback."""
     logger.info(f"Fetching liquidity and volume data for {token_address[:8]}...")
 
