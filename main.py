@@ -1799,7 +1799,10 @@ def analyze_token():
         }
 
         logger.info(f"✅ Analysis complete and cached for {token_address[:8]}...")
-
+      # NEW CODE STARTS HERE
+        # Increment usage counter for this access code since the analysis was successful
+        increment_usage(access_code)
+        # NEW CODE ENDS HERE
         return jsonify(result), 200
 
     except Exception as e:
