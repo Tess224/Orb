@@ -42,6 +42,22 @@ CHAINLINK_RPC = os.environ.get('CHAINLINK_RPC_URL')
 analysis_cache: Dict[str, Dict] = {}
 historical_slippage: Dict[str, List[Dict]] = {}
 wallet_analysis_cache: Dict[str, Dict] = {}
+# NEW CODE STARTS HERE - Add these lines
+# Rate limiting storage - tracks how many analyses each access code has used
+# Structure: {'ACCESS-CODE': {'count': 5, 'reset_time': 1234567890}}
+rate_limit_storage: Dict[str, Dict] = {}
+
+# Rate limiting configuration
+DAILY_ANALYSIS_LIMIT = 10  # Default limit per access code per day
+RATE_LIMIT_WINDOW_HOURS = 24  # Reset every 24 hours
+
+# Access code limits (you can customize these for different users)
+ACCESS_CODE_LIMITS = {
+    'ADMIN-2025': 999,  # Your admin code gets unlimited analyses
+    'ALPHA-TEST-1': 10,
+    'ALPHA-TEST-2': 10,
+    'BETA-TEST-1': 5,
+}
 
 # ============================================================================
 # PHASE 2: WALLET ANALYSIS SYSTEM - BIRDEYE HELPERS
