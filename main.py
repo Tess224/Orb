@@ -1890,7 +1890,10 @@ def analyze_wallet():
             }), 400
         
         wallet_address = data['wallet_address'].strip()
-        
+        # NEW CODE STARTS HERE
+        # Extract the access code from the request
+        access_code = data.get('access_code', 'anonymous')
+        # NEW CODE ENDS HERE
         # Validate wallet address format
         # Solana addresses are 32-44 characters of base58 characters
         if not wallet_address or len(wallet_address) < 32:
@@ -1899,7 +1902,21 @@ def analyze_wallet():
                 'success': False,
                 'error': 'Invalid wallet address format'
             }), 400
+
+        # NEW CODE STARTS HERE
+        # Check rate limit before performing expensive blockchain queries
+        rate_check = check_rate_limit(access_code)
         
+        if not rate_check['allowed']:
+            logger.warning(f"⛔ Rate limit exceeded for access code: {access_code}")
+            return jsonify({
+                'success': False,
+                'error': 'Daily analysis limit exceeded',
+                'limit': rate_check['limit'],
+                'resets_at': rate_check['resets_at'],
+                'message': f"You have used all {rate_check['limit']} daily analyses."
+            }), 429
+        # NEW CODE ENDS HERE
         # Extract optional parameters
         holding_percent = float(data.get('holding_percent', 0.0))
         current_token_address = data.get('current_token_address', None)
@@ -1930,7 +1947,10 @@ def analyze_wallet():
         }
         
         logger.info(f"✅ Wallet analysis complete: {wallet_address[:8]} → IQ={analysis_result['iq']}")
-        
+        # NEW CODE STARTS HERE
+        # Increment usage counter for successful wallet analysis
+        increment_usage(access_code)
+        # NEW CODE ENDS HERE
         return jsonify(response), 200
         
     except ValueError as e:
