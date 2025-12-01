@@ -1703,6 +1703,11 @@ def analyze_token():
             }), 400
 
         token_address = data['token_address']
+        # NEW CODE STARTS HERE
+        # Extract the access code from the request
+        # If no access code is provided, we use 'anonymous' as a default
+        access_code = data.get('access_code', 'anonymous')
+        # NEW CODE ENDS HERE
 
         if not token_address or len(token_address) < 32:
             logger.warning(f"Invalid token address format: {token_address}")
@@ -1711,7 +1716,22 @@ def analyze_token():
                 'status': 'error'
             }), 400
 
-        logger.info(f"📥 Analysis request received for token: {token_address[:8]}...")
+        # NEW CODE STARTS HERE - Update the log message to include access code
+        logger.info(f"📥 Analysis request received for token: {token_address[:8]}... (access_code: {access_code})")
+
+        # Check rate limit BEFORE doing any expensive operations
+        rate_check = check_rate_limit(access_code)
+        
+        if not rate_check['allowed']:
+            logger.warning(f"⛔ Rate limit exceeded for access code: {access_code}")
+            return jsonify({
+                'error': 'Daily analysis limit exceeded',
+                'limit': rate_check['limit'],
+                'resets_at': rate_check['resets_at'],
+                'message': f"You have used all {rate_check['limit']} daily analyses. Limit resets at timestamp {rate_check['resets_at']}",
+                'status': 'rate_limited'
+            }), 429  # HTTP 429 means "Too Many Requests"
+        # NEW CODE ENDS HERE
 
         # --- 2. CACHE CHECK ---
         if token_address in analysis_cache:
