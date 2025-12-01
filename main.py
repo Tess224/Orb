@@ -60,6 +60,92 @@ ACCESS_CODE_LIMITS = {
 }
 
 # ============================================================================
+# RATE LIMITING SYSTEM
+# ============================================================================
+
+def check_rate_limit(access_code: str) -> Dict:
+    """
+    Check if an access code has exceeded its daily analysis limit.
+    
+    This function looks up how many analyses this access code has performed
+    today. If they have hit their limit, it returns allowed as False.
+    Otherwise, it returns allowed as True so they can proceed.
+    
+    Args:
+        access_code: The access code from the user's request
+        
+    Returns:
+        Dictionary with allowed (bool), remaining (int), resets_at (timestamp), limit (int)
+    """
+    # Get the limit for this specific access code
+    # If this code is not in our ACCESS_CODE_LIMITS dictionary, use the default limit
+    limit = ACCESS_CODE_LIMITS.get(access_code, DAILY_ANALYSIS_LIMIT)
+    
+    # Get current time as a Unix timestamp
+    current_time = time.time()
+    
+    # Check if we have any record for this access code yet
+    if access_code not in rate_limit_storage:
+        # First time seeing this code today, so initialize it with zero usage
+        reset_time = current_time + (RATE_LIMIT_WINDOW_HOURS * 3600)  # 3600 seconds in an hour
+        rate_limit_storage[access_code] = {
+            'count': 0,
+            'reset_time': reset_time
+        }
+    
+    # Get the stored data for this access code
+    usage_data = rate_limit_storage[access_code]
+    
+    # Check if the rate limit window has expired (meaning it's a new day)
+    if current_time >= usage_data['reset_time']:
+        # Time window expired, so reset the counter to zero
+        logger.info(f"⏰ Rate limit reset for access code {access_code}")
+        reset_time = current_time + (RATE_LIMIT_WINDOW_HOURS * 3600)
+        rate_limit_storage[access_code] = {
+            'count': 0,
+            'reset_time': reset_time
+        }
+        usage_data = rate_limit_storage[access_code]
+    
+    # Check if they have exceeded their limit
+    current_count = usage_data['count']
+    remaining = limit - current_count
+    
+    if current_count >= limit:
+        logger.warning(f"⛔ Rate limit exceeded for {access_code}: {current_count}/{limit}")
+        return {
+            'allowed': False,
+            'remaining': 0,
+            'resets_at': int(usage_data['reset_time']),
+            'limit': limit
+        }
+    
+    logger.info(f"✅ Rate limit OK for {access_code}: {current_count}/{limit} used")
+    return {
+        'allowed': True,
+        'remaining': remaining,
+        'resets_at': int(usage_data['reset_time']),
+        'limit': limit
+    }
+
+
+def increment_usage(access_code: str) -> None:
+    """
+    Increment the usage counter for an access code after a successful analysis.
+    
+    This should be called AFTER you have performed the analysis successfully.
+    It increases their usage count by one.
+    
+    Args:
+        access_code: The access code that just performed an analysis
+    """
+    if access_code in rate_limit_storage:
+        rate_limit_storage[access_code]['count'] += 1
+        new_count = rate_limit_storage[access_code]['count']
+        limit = ACCESS_CODE_LIMITS.get(access_code, DAILY_ANALYSIS_LIMIT)
+        logger.info(f"📊 Usage incremented for {access_code}: {new_count}/{limit}")
+
+# ============================================================================
 # PHASE 2: WALLET ANALYSIS SYSTEM - BIRDEYE HELPERS
 # ============================================================================
 
