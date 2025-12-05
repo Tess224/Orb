@@ -2143,6 +2143,219 @@ def analyze_wallet():
         }), 500
 
 
+# ============================================================================
+# NEW ENDPOINTS FOR REAL-TIME SYSTEM
+# ============================================================================
+
+@app.route('/tracking/status', methods=['GET'])
+def tracking_status():
+    """
+    Check if real-time tracking is working and see which tokens are tracked.
+    
+    Use this to verify your WebSocket is connected and working.
+    """
+    try:
+        status = {
+            'websocket_active': websocket_client is not None,
+            'metrics_manager_active': metrics_manager is not None,
+            'tracked_tokens': [],
+            'websocket_stats': None,
+            'timestamp': int(time.time())
+        }
+        
+        if metrics_manager:
+            tracked = metrics_manager.get_all_tracked_tokens()
+            status['tracked_tokens'] = [
+                {
+                    'token_address': addr,
+                    'pool_address': token_to_pool_map.get(addr, 'Unknown')
+                }
+                for addr in tracked
+            ]
+            status['tracked_count'] = len(tracked)
+        
+        if websocket_client:
+            status['websocket_stats'] = websocket_client.get_stats()
+        
+        return jsonify(status), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting tracking status: {e}")
+        return jsonify({
+            'error': str(e),
+            'status': 'error'
+        }), 500
+
+
+@app.route('/tracking/start', methods=['POST'])
+def start_tracking():
+    """
+    Start tracking a token in real-time.
+    
+    Request body should be:
+    {
+        "token_address": "TokenAddressHere",
+        "access_code": "YourAccessCode"
+    }
+    
+    We'll automatically find the pool address for you.
+    """
+    try:
+        data = request.get_json()
+        
+        if not data or 'token_address' not in data:
+            return jsonify({
+                'error': 'Missing required field: token_address',
+                'status': 'error'
+            }), 400
+        
+        token_address = data['token_address']
+        access_code = data.get('access_code', 'anonymous')
+        
+        logger.info(f"📥 Request to start tracking {token_address[:8]}...")
+        
+        # Check rate limit
+        rate_check = check_rate_limit(access_code)
+        if not rate_check['allowed']:
+            return jsonify({
+                'error': 'Daily analysis limit exceeded',
+                'limit': rate_check['limit'],
+                'resets_at': rate_check['resets_at'],
+                'status': 'rate_limited'
+            }), 429
+        
+        # Check if WebSocket is active
+        if not websocket_client or not metrics_manager:
+            return jsonify({
+                'error': 'Real-time tracking system not initialized',
+                'message': 'Make sure HELIUS_API_KEY is set in environment variables',
+                'status': 'error'
+            }), 503
+        
+        # Get liquidity data
+        logger.info(f"  Fetching liquidity data...")
+        liq_data = get_token_liquidity_simple(token_address)
+        
+        # Find the pool address
+        logger.info(f"  Finding Raydium pool...")
+        pool_address = get_raydium_pool_address(token_address)
+        
+        if not pool_address:
+            return jsonify({
+                'error': 'Could not find Raydium pool for this token',
+                'message': 'Token might not have a Raydium pool or Birdeye data unavailable',
+                'status': 'error'
+            }), 404
+        
+        # Start tracking
+        success = start_tracking_token_realtime(
+            token_address,
+            pool_address,
+            liq_data['liquidity_usd']
+        )
+        
+        if success:
+            increment_usage(access_code)
+            return jsonify({
+                'status': 'success',
+                'message': f'Started tracking {token_address[:8]}...',
+                'token_address': token_address,
+                'pool_address': pool_address,
+                'liquidity_usd': liq_data['liquidity_usd'],
+                'timestamp': int(time.time())
+            }), 200
+        else:
+            return jsonify({
+                'error': 'Failed to start tracking',
+                'status': 'error'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"❌ Error in start_tracking: {e}")
+        return jsonify({
+            'error': str(e),
+            'status': 'error'
+        }), 500
+
+
+@app.route('/metrics/realtime/<token_address>', methods=['GET'])
+def get_realtime_metrics(token_address: str):
+    """
+    Get the current real-time metrics for a token that's being tracked.
+    
+    Use this to see live volume, price changes, buy/sell ratios, etc.
+    """
+    try:
+        if not metrics_manager:
+            return jsonify({
+                'error': 'Real-time tracking not initialized',
+                'status': 'error'
+            }), 503
+        
+        metrics = metrics_manager.get_metrics(token_address)
+        
+        if not metrics:
+            return jsonify({
+                'error': f'Token {token_address[:8]}... is not being tracked',
+                'message': 'Use /tracking/start to begin tracking this token',
+                'status': 'not_found',
+                'tracked_tokens': metrics_manager.get_all_tracked_tokens()
+            }), 404
+        
+        # Convert metrics to a nice JSON format
+        result = {
+            'token_address': token_address,
+            'timestamp': metrics.timestamp,
+            'phase': metrics.phase,
+            'volume': {
+                '1_minute': metrics.volume_1m,
+                '5_minutes': metrics.volume_5m,
+                '15_minutes': metrics.volume_15m,
+                '1_hour': metrics.volume_1h,
+                '24_hours': metrics.volume_24h
+            },
+            'buy_volume': {
+                '1_minute': metrics.buy_volume_1m,
+                '5_minutes': metrics.buy_volume_5m,
+                '1_hour': metrics.buy_volume_1h
+            },
+            'sell_volume': {
+                '1_minute': metrics.sell_volume_1m,
+                '5_minutes': metrics.sell_volume_5m,
+                '1_hour': metrics.sell_volume_1h
+            },
+            'trade_counts': {
+                '1_minute': metrics.trade_count_1m,
+                '5_minutes': metrics.trade_count_5m,
+                '1_hour': metrics.trade_count_1h
+            },
+            'price': {
+                'current': metrics.current_price,
+                'change_1m_percent': metrics.price_change_1m,
+                'change_5m_percent': metrics.price_change_5m,
+                'change_1h_percent': metrics.price_change_1h
+            },
+            'key_metrics': {
+                'buy_sell_ratio_1h': metrics.bsr_1h,
+                'volume_liquidity_ratio': metrics.vlr_1h,
+                'pressure_intensity_index': metrics.pii,
+                'volume_trend_score': metrics.vts,
+                'volume_exhaustion_index': metrics.vei
+            },
+            'liquidity_usd': metrics.liquidity_usd,
+            'total_trades_processed': metrics.total_trades_processed
+        }
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting real-time metrics: {e}")
+        return jsonify({
+            'error': str(e),
+            'status': 'error'
+        }), 500
+
+
 if __name__ == '__main__':
     logger.info("=" * 70)
     logger.info("🚀 Starting Solana Token Analysis Backend Server")
