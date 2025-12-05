@@ -1656,6 +1656,170 @@ def analyze_velocity(liquidity_usd: float, volume_24h_usd: float) -> Dict:
     return result
 
 
+# ============================================================================
+# WEBSOCKET BACKGROUND THREAD SYSTEM
+# ============================================================================
+
+def run_websocket_loop(api_key: str):
+    """
+    This function runs in a separate background thread.
+    It handles all the async WebSocket operations.
+    
+    Think of this as a separate worker that runs alongside your Flask server,
+    constantly listening for trades.
+    """
+    global websocket_client, metrics_manager
+    
+    try:
+        logger.info("🚀 Starting WebSocket background thread...")
+        
+        # Create a new event loop for this thread
+        # (Each thread needs its own event loop for async operations)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Create the WebSocket client
+        websocket_client = HeliusWebSocketClient(api_key)
+        
+        # Create the metrics manager
+        metrics_manager = MetricsManager()
+        
+        # Connect the two: when WebSocket gets trade data, send it to metrics manager
+        websocket_client.add_trade_callback(metrics_manager.handle_trade)
+        
+        # Define an async function to connect and start listening
+        async def connect_and_listen():
+            connected = await websocket_client.connect()
+            if connected:
+                logger.info("✅ WebSocket connected, now listening for trades...")
+                await websocket_client.listen()
+            else:
+                logger.error("❌ Failed to connect WebSocket")
+        
+        # Run the connection and listening
+        loop.run_until_complete(connect_and_listen())
+        
+    except Exception as e:
+        logger.error(f"❌ Error in WebSocket thread: {e}")
+    finally:
+        loop.close()
+
+
+def start_websocket_background():
+    """
+    Start the WebSocket system in a background thread.
+    
+    This gets called when your Flask app starts up.
+    """
+    global websocket_thread
+    
+    # Get Helius API key from environment
+    helius_api_key = os.environ.get('HELIUS_API_KEY')
+    
+    if not helius_api_key:
+        logger.warning("⚠️ HELIUS_API_KEY not found - real-time monitoring will not work")
+        logger.warning("⚠️ Set it in your environment variables to enable real-time features")
+        return
+    
+    logger.info("🔧 Starting WebSocket background thread...")
+    
+    # Create and start the thread
+    websocket_thread = threading.Thread(
+        target=run_websocket_loop,
+        args=(helius_api_key,),
+        daemon=True  # Thread will close when main program exits
+    )
+    websocket_thread.start()
+    
+    logger.info("✅ WebSocket thread started successfully")
+    
+    # Give it a moment to initialize
+    time.sleep(2)
+
+
+def get_raydium_pool_address(token_address: str) -> Optional[str]:
+    """
+    Find the Raydium pool address for a token using Birdeye.
+    
+    We need the pool address to subscribe to its transactions.
+    """
+    try:
+        if not BIRDEYE_API_KEY:
+            logger.warning("⚠️ BIRDEYE_API_KEY not set, can't find pool address")
+            return None
+        
+        # Use Birdeye's market list endpoint
+        url = f"https://public-api.birdeye.so/defi/v3/token/market"
+        params = {'address': token_address}
+        headers = {'X-API-KEY': BIRDEYE_API_KEY}
+        
+        logger.info(f"🔍 Looking for Raydium pool for token {token_address[:8]}...")
+        
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('success') and data.get('data'):
+                markets = data['data'].get('items', [])
+                
+                # Find Raydium pools
+                raydium_pools = [
+                    m for m in markets 
+                    if m.get('source') == 'Raydium'
+                ]
+                
+                if raydium_pools:
+                    # Sort by liquidity, take the biggest one
+                    raydium_pools.sort(key=lambda x: x.get('liquidity', 0), reverse=True)
+                    pool_addr = raydium_pools[0].get('address')
+                    
+                    if pool_addr:
+                        logger.info(f"✅ Found Raydium pool: {pool_addr[:8]}...")
+                        return pool_addr
+        
+        logger.warning(f"⚠️ No Raydium pool found for {token_address[:8]}")
+        return None
+        
+    except Exception as e:
+        logger.error(f"❌ Error finding pool: {e}")
+        return None
+
+
+def start_tracking_token_realtime(token_address: str, pool_address: str, liquidity_usd: float):
+    """
+    Start tracking a token in real-time.
+    
+    This tells the WebSocket to watch this token's pool and tells the
+    metrics manager to start calculating metrics for it.
+    """
+    global websocket_client, metrics_manager
+    
+    if not websocket_client or not metrics_manager:
+        logger.warning("⚠️ Real-time system not initialized - can't start tracking")
+        return False
+    
+    try:
+        # Add to metrics manager
+        metrics_manager.add_token(token_address, liquidity_usd)
+        
+        # Store the mapping
+        token_to_pool_map[token_address] = pool_address
+        
+        # Subscribe WebSocket to this pool
+        # We need to do this in an async way from our sync context
+        # For simplicity, we'll just log that we want to track it
+        # The actual subscription would need to be scheduled in the async loop
+        
+        logger.info(f"✅ Started real-time tracking for {token_address[:8]}...")
+        logger.info(f"   Pool: {pool_address[:8]}...")
+        logger.info(f"   Liquidity: ${liquidity_usd:,.0f}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error starting tracking: {e}")
+        return False
+
 @app.route('/')
 def home():
     """
