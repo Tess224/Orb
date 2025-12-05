@@ -2364,6 +2364,9 @@ if __name__ == '__main__':
     logger.info(f"Cache duration: {CACHE_DURATION_SECONDS} seconds")
     logger.info(f"Probe sizes: {PROBE_SIZES_USD}")
     logger.info(f"Historical measurements kept: {MAX_HISTORICAL_MEASUREMENTS}")
+    logger.info("🔧 Initializing real-time tracking system...")
+    start_websocket_background()
+    
     logger.info("=" * 70)
     
     import os
