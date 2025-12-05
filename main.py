@@ -2355,20 +2355,36 @@ def get_realtime_metrics(token_address: str):
             'status': 'error'
         }), 500
 
+# ============================================================================
+# INITIALIZATION - This runs when Gunicorn imports the file
+# ============================================================================
 
-if __name__ == '__main__':
+def initialize_system():
+    """
+    Initialize the system when the app starts.
+    This runs when Gunicorn imports the file, not just when running python main.py
+    """
     logger.info("=" * 70)
     logger.info("🚀 Starting Solana Token Analysis Backend Server")
     logger.info("=" * 70)
-    
     logger.info(f"Cache duration: {CACHE_DURATION_SECONDS} seconds")
     logger.info(f"Probe sizes: {PROBE_SIZES_USD}")
     logger.info(f"Historical measurements kept: {MAX_HISTORICAL_MEASUREMENTS}")
+    
+    # Start the WebSocket background thread
     logger.info("🔧 Initializing real-time tracking system...")
     start_websocket_background()
     
     logger.info("=" * 70)
-    
-    import os
+
+
+# IMPORTANT: Call initialize_system() HERE, outside the if __name__ block
+# This ensures it runs when Gunicorn imports the file
+initialize_system()
+
+
+# This block only runs when you test locally with "python main.py"
+# Gunicorn ignores this block
+if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
