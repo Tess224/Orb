@@ -4,7 +4,7 @@ This module maintains running calculations of all metrics as trades arrive.
 """
 
 import time
-from typing import Dict, List, Optional, Deque
+from typing import Dict, List, Optional, Deque, Tuple
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
