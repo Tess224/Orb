@@ -1,16 +1,19 @@
 """
-Real-Time Data Collection System using Helius WebSocket
-This module establishes a persistent connection to Helius and streams
-all trades for tokens we're tracking in real-time.
+Real-Time Transaction Streaming using Helius WebSocket
+
+MAJOR CHANGE FROM ORIGINAL:
+- Now uses logsSubscribe instead of accountSubscribe
+- Fetches full transaction data when we receive notifications
+- This gives us the actual trade details we need for parsing
 """
 
 import asyncio
 import websockets
 import json
 import logging
+import aiohttp
 from typing import Dict, List, Callable, Optional
 from datetime import datetime
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -19,14 +22,13 @@ class HeliusWebSocketClient:
     """
     Manages WebSocket connection to Helius for real-time transaction monitoring.
     
-    This class handles:
-    - Establishing and maintaining WebSocket connection
-    - Subscribing to specific token pool addresses
-    - Parsing incoming transaction data
-    - Routing parsed trades to callback functions
-    - Automatic reconnection if connection drops
+    KEY ARCHITECTURAL CHANGE:
+    Instead of subscribing to account state updates (which only show us the
+    new balance after a trade), we now subscribe to transaction logs (which
+    show us the actual transactions as they happen). This gives us access to
+    the token balance changes, swap details, and signatures we need.
     """
-    
+
     def __init__(self, api_key: str):
         """
         Initialize the WebSocket client.
@@ -34,242 +36,264 @@ class HeliusWebSocketClient:
         Args:
             api_key: Your Helius API key from environment variables
         """
-        # Build the WebSocket URL - Helius uses wss:// for secure WebSocket
+        # WebSocket connection URL
         self.ws_url = f"wss://mainnet.helius-rpc.com/?api-key={api_key}"
         
-        # This will hold our active WebSocket connection
+        # REST API URL for fetching full transaction data
+        # When we get a transaction signature from logs, we'll use this to fetch details
+        self.http_url = f"https://mainnet.helius-rpc.com/?api-key={api_key}"
+        
         self.websocket = None
         
-        # Track which pool addresses we're subscribed to
-        # Dictionary maps pool address to token info for quick lookup
+        # Track which pool addresses we're monitoring
         self.subscribed_pools: Dict[str, Dict] = {}
         
-        # Callback functions that get called when we receive trade data
-        # Multiple parts of your system might want to know about trades
+        # Callbacks that get notified when we successfully parse a trade
         self.trade_callbacks: List[Callable] = []
         
-        # Flag to control the main loop
+        # For making HTTP requests to fetch transaction details
+        self.http_session = None
+        
         self.is_running = False
         
-        # Statistics for monitoring
+        # Statistics
         self.stats = {
             'messages_received': 0,
+            'transactions_fetched': 0,
             'trades_parsed': 0,
             'errors': 0,
             'last_message_time': None
         }
-        
-        logger.info(f"✅ Helius WebSocket client initialized")
-    
-    
+
+        logger.info(f"✅ Helius WebSocket client initialized with transaction streaming")
+
+
     def add_trade_callback(self, callback: Callable):
-        """
-        Register a function to be called whenever we receive trade data.
-        
-        Your callback function should accept a dictionary with trade info:
-        {
-            'token_address': str,
-            'pool_address': str,
-            'timestamp': int,
-            'price': float,
-            'amount': float,
-            'direction': 'buy' or 'sell',
-            'size_usd': float,
-            'transaction_signature': str
-        }
-        
-        Args:
-            callback: Function that will be called with trade data
-        """
+        """Register a function to be called when we successfully parse a trade."""
         self.trade_callbacks.append(callback)
         logger.info(f"📝 Registered trade callback: {callback.__name__}")
-    
-    
+
+
     async def connect(self):
-        """
-        Establish WebSocket connection to Helius.
-        
-        This creates the persistent connection that will stay open
-        and stream data to us continuously.
-        """
+        """Establish WebSocket connection to Helius."""
         try:
             logger.info(f"🔌 Connecting to Helius WebSocket...")
             
-            # Connect to Helius - this might take a few seconds
             self.websocket = await websockets.connect(
                 self.ws_url,
-                ping_interval=20,  # Send ping every 20 seconds to keep connection alive
-                ping_timeout=10,   # If no pong response in 10 seconds, reconnect
+                ping_interval=20,
+                ping_timeout=10,
                 close_timeout=10
             )
             
+            # Also create an HTTP session for fetching transaction details
+            self.http_session = aiohttp.ClientSession()
+            
             logger.info(f"✅ WebSocket connected successfully")
             return True
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to connect to Helius WebSocket: {e}")
             return False
-    
-    
+
+
     async def subscribe_to_pool(self, pool_address: str, token_address: str, token_symbol: str = "UNKNOWN"):
         """
-        Subscribe to transaction updates for a specific liquidity pool.
+        Subscribe to transaction logs for a specific pool.
         
-        When you subscribe to a pool, Helius will send us every transaction
-        that affects that pool - buys, sells, liquidity adds/removes, etc.
+        CRITICAL CHANGE: We're now using logsSubscribe instead of accountSubscribe.
+        
+        Why this matters:
+        - accountSubscribe only tells us "the account changed" but not how or why
+        - logsSubscribe tells us "a transaction happened that mentioned this account"
+        - With logsSubscribe, we get transaction signatures that we can fetch for full details
         
         Args:
-            pool_address: The Solana address of the Raydium/Orca pool
+            pool_address: The Solana address of the liquidity pool
             token_address: The token's mint address (for our records)
-            token_symbol: Optional symbol like "BONK" for logging
+            token_symbol: Optional symbol for logging
         """
         if not self.websocket:
             logger.error("❌ Cannot subscribe - WebSocket not connected")
             return False
-        
+
         try:
-            # Build subscription message in Helius's required format
+            # Build the subscription message using logsSubscribe
+            # This tells Helius: "notify me whenever a transaction mentions this address"
             subscription_message = {
                 "jsonrpc": "2.0",
-                "id": pool_address,  # Use pool address as ID for tracking
-                "method": "accountSubscribe",  # This is Helius's method name
+                "id": pool_address,
+                "method": "logsSubscribe",  # Changed from accountSubscribe
                 "params": [
-                    pool_address,  # The account we want to watch
                     {
-                        "encoding": "jsonParsed",  # We want parsed JSON, not raw bytes
-                        "commitment": "confirmed"   # Wait for confirmation (not just processed)
+                        "mentions": [pool_address]  # Watch for any transaction mentioning this pool
+                    },
+                    {
+                        "commitment": "confirmed"  # Wait for confirmation
                     }
                 ]
             }
-            
-            # Send the subscription request
+
             await self.websocket.send(json.dumps(subscription_message))
-            
+
             # Store info about this subscription
             self.subscribed_pools[pool_address] = {
                 'token_address': token_address,
                 'token_symbol': token_symbol,
                 'subscribed_at': datetime.now().timestamp()
             }
-            
-            logger.info(f"📡 Subscribed to pool {pool_address[:8]}... (Token: {token_symbol})")
+
+            logger.info(f"📡 Subscribed to transaction logs for pool {pool_address[:8]}... (Token: {token_symbol})")
             return True
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to subscribe to pool {pool_address[:8]}: {e}")
             return False
-    
-    
-    def parse_raydium_swap(self, transaction_data: Dict, pool_address: str) -> Optional[Dict]:
+
+
+    async def fetch_transaction_details(self, signature: str) -> Optional[Dict]:
         """
-        Parse a Raydium swap transaction to extract trade information.
+        Fetch full transaction details from Helius using a transaction signature.
         
-        This is the complex part where we dig through Solana transaction
-        structure to figure out: was this a buy or sell? How much? At what price?
-        
-        Raydium transactions have a specific structure. We look for:
-        - Token balance changes (preTokenBalances vs postTokenBalances)
-        - SOL balance changes (preBalances vs postBalances)
-        - Which direction the swap went
+        This is the key piece that makes everything work:
+        1. We receive a log notification with a transaction signature
+        2. We use this function to fetch the full transaction data
+        3. That full data contains all the balance changes and swap details
+        4. We can then parse it to extract trade information
         
         Args:
-            transaction_data: Raw transaction data from Helius
-            pool_address: The pool address this transaction affected
+            signature: Transaction signature from the log notification
             
         Returns:
-            Parsed trade dict or None if not a valid swap
+            Full transaction data including all the details we need for parsing
         """
         try:
-            # NEW: Log the raw transaction data so we can see what Helius is sending
-            logger.info(f"🔍 Parsing transaction for pool {pool_address[:8]}...")
-            logger.info(f"   Transaction keys: {list(transaction_data.keys())}")
+            # Build the RPC request to fetch transaction details
+            request_body = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getTransaction",
+                "params": [
+                    signature,
+                    {
+                        "encoding": "jsonParsed",  # Get parsed format for easier processing
+                        "maxSupportedTransactionVersion": 0,
+                        "commitment": "confirmed"
+                    }
+                ]
+            }
+            
+            # Make the HTTP request
+            async with self.http_session.post(
+                self.http_url,
+                json=request_body,
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    
+                    if 'result' in data and data['result']:
+                        self.stats['transactions_fetched'] += 1
+                        return data['result']
+                    else:
+                        logger.debug(f"Transaction {signature[:8]} returned no result")
+                        return None
+                else:
+                    logger.warning(f"HTTP {response.status} when fetching transaction {signature[:8]}")
+                    return None
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout fetching transaction {signature[:8]}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error fetching transaction {signature[:8]}: {e}")
+            return None
+
+
+    def parse_raydium_swap(self, transaction_data: Dict, pool_address: str) -> Optional[Dict]:
+        """
+        Parse a transaction to extract swap trade information.
         
-        # Get token info for this pool
-            pool_info = self.subscribed_pools.get(pool_address, {})
+        This method now receives FULL transaction data (not just account state),
+        so it can properly identify swaps and extract all the details.
+        """
+        try:
+            logger.debug(f"🔍 Parsing transaction for pool {pool_address[:8]}...")
+            
             # Get token info for this pool
             pool_info = self.subscribed_pools.get(pool_address, {})
             token_address = pool_info.get('token_address')
-            
+
             if not token_address:
                 return None
-            
-            # Extract the transaction and metadata
-            # Helius sends this in their specific format
+
+            # Extract metadata and transaction details
             meta = transaction_data.get('meta', {})
             transaction = transaction_data.get('transaction', {})
-
-            # NEW: Log what we found in the metadata
-            logger.info(f"   Meta keys: {list(meta.keys()) if meta else 'None'}")
-            logger.info(f"   Has preTokenBalances: {bool(meta.get('preTokenBalances'))}")
-            logger.info(f"   Has postTokenBalances: {bool(meta.get('postTokenBalances'))}")
-            logger.info(f"   Has preBalances: {bool(meta.get('preBalances'))}")
-            logger.info(f"   Has postBalances: {bool(meta.get('postBalances'))}")
-
-            # Get timestamp from block time
+            
+            # Get timestamp
             block_time = transaction_data.get('blockTime', 0)
             
-            # Get the transaction signature (like a transaction ID)
-            signature = transaction.get('signatures', [''])[0]
-            
+            # Get transaction signature
+            message = transaction.get('message', {})
+            signatures = message.get('signatures', [])
+            signature = signatures[0] if signatures else ''
+
             # Extract balance changes
             pre_token_balances = meta.get('preTokenBalances', [])
             post_token_balances = meta.get('postTokenBalances', [])
             pre_balances = meta.get('preBalances', [])
             post_balances = meta.get('postBalances', [])
-            
-            # We need to find the balance changes for our token
-            # This tells us how many tokens and how much SOL were exchanged
-            
+
+            # Calculate token amount change for our specific token
             token_change = 0
-            sol_change = 0
-            
-            # Calculate token amount change
-            # We're looking for changes in the pool's token balance
             for i, post_bal in enumerate(post_token_balances):
                 if post_bal.get('mint') == token_address:
-                    # Found our token, calculate the change
                     pre_amount = 0
                     if i < len(pre_token_balances):
-                        pre_amount = float(pre_token_balances[i].get('uiTokenAmount', {}).get('uiAmount', 0))
+                        pre_amount = float(pre_token_balances[i].get('uiTokenAmount', {}).get('uiAmount', 0) or 0)
                     
-                    post_amount = float(post_bal.get('uiTokenAmount', {}).get('uiAmount', 0))
+                    post_amount = float(post_bal.get('uiTokenAmount', {}).get('uiAmount', 0) or 0)
                     token_change = post_amount - pre_amount
                     break
-            
-            # Calculate SOL change for the pool
-            # Usually the pool is the first account in the transaction
+
+            # Calculate SOL change (typically the first account is the pool)
+            sol_change = 0
             if len(pre_balances) > 0 and len(post_balances) > 0:
                 sol_change = (post_balances[0] - pre_balances[0]) / 1e9  # Convert lamports to SOL
-            
+
             # Determine trade direction and calculate amounts
-            # BUY: tokens go out of pool (negative change), SOL comes in (positive change)
-            # SELL: tokens come into pool (positive change), SOL goes out (negative change)
+            # BUY: tokens leave pool (negative change), SOL enters pool (positive change)
+            # SELL: tokens enter pool (positive change), SOL leaves pool (negative change)
             
             if token_change < 0 and sol_change > 0:
-                # This is a BUY (someone bought tokens)
+                # This is a BUY
                 direction = 'buy'
                 token_amount = abs(token_change)
                 sol_amount = sol_change
                 
             elif token_change > 0 and sol_change < 0:
-                # This is a SELL (someone sold tokens)
+                # This is a SELL
                 direction = 'sell'
                 token_amount = token_change
                 sol_amount = abs(sol_change)
                 
             else:
-                # Not a swap, maybe liquidity add/remove or something else
+                # Not a swap (maybe liquidity add/remove or failed transaction)
+                logger.debug(f"   ❌ Not a swap - token_change: {token_change:.2f}, sol_change: {sol_change:.4f}")
                 return None
-            
+
             # Calculate price and USD value
-            # Price = SOL per token
-            price = sol_amount / token_amount if token_amount > 0 else 0
+            if token_amount == 0:
+                return None
+                
+            price = sol_amount / token_amount
             
-            # For USD value, we'd need current SOL price
-            # For now, we'll estimate or you can fetch from your existing get_sol_price_usd()
-            sol_price_usd = 150  # Placeholder - you should fetch this
+            # Estimate USD value (using approximate SOL price)
+            # In production, you'd want to fetch current SOL price
+            sol_price_usd = 190  # Approximate - you should fetch this dynamically
             size_usd = sol_amount * sol_price_usd
-            
+
             # Build the parsed trade object
             trade = {
                 'token_address': token_address,
@@ -282,112 +306,109 @@ class HeliusWebSocketClient:
                 'size_usd': size_usd,
                 'transaction_signature': signature
             }
-            
+
             self.stats['trades_parsed'] += 1
+            logger.info(f"💱 Trade parsed: {direction.upper()} ${size_usd:.2f} @ {pool_address[:8]}")
+            
             return trade
 
         except Exception as e:
-            logger.warning(f"⚠️ Error parsing swap transaction: {e}")
+            logger.warning(f"⚠️ Error parsing transaction: {e}")
             self.stats['errors'] += 1
-            logger.info(f"   ❌ Not a valid swap - token_change: {token_change}, sol_change: {sol_change}")
-
             return None
-    
-    
+
+
     async def handle_message(self, message: str):
         """
         Process incoming WebSocket messages from Helius.
         
-        Helius sends us messages in JSON format. We parse them,
-        extract trade information, and notify all registered callbacks.
-        
-        Args:
-            message: Raw JSON string from WebSocket
+        NEW FLOW:
+        1. Receive log notification with transaction signature
+        2. Fetch full transaction data using that signature
+        3. Parse the transaction to extract trade information
+        4. Notify all registered callbacks
         """
         try:
             data = json.loads(message)
             self.stats['messages_received'] += 1
             self.stats['last_message_time'] = datetime.now()
 
-            # NEW: Log every message we receive
             logger.info(f"📨 WebSocket message received")
             logger.info(f"   Message structure: {list(data.keys())}")
-        
-            
-            # Check if this is a subscription notification (has 'params')
+
+            # Check if this is a log notification
             if 'params' in data:
-                result = data['params'].get('result', {})
-                context = result.get('context', {})
-                value = result.get('value', {})
-              
                 logger.info(f"   ✓ Has params - this is a notification")
-                logger.info(f"   Result structure: {list(result.keys()) if result else 'None'}")
-                # NEW: Add these lines to see what's actually in the value
-                value = result.get('value', {})
-                logger.info(f"   Value structure: {list(value.keys()) if value else 'None'}")
-                if value:
-                    logger.info(f"   Value has 'account': {bool(value.get('account'))}")
-                    logger.info(f"   Value has 'data': {bool(value.get('data'))}")
-                # Extract account address this update is for
-                # This should match one of our subscribed pools
-                account = data['params'].get('subscription')
                 
-                # The actual transaction data is in value
-                if 'account' in value:
-                    account_data = value['account']
+                result = data['params'].get('result', {})
+                logger.info(f"   Result structure: {list(result.keys()) if result else 'None'}")
+                
+                # Extract the logs from the notification
+                value = result.get('value', {})
+                
+                if not value:
+                    logger.debug("   No value in result, skipping")
+                    return
+                
+                # The value contains the transaction signature and logs
+                signature = value.get('signature')
+                
+                if not signature:
+                    logger.debug("   No signature in notification, skipping")
+                    return
+                
+                logger.info(f"   📝 Transaction signature: {signature[:16]}...")
+                
+                # Now fetch the full transaction details using this signature
+                logger.info(f"   🔄 Fetching full transaction data...")
+                transaction_data = await self.fetch_transaction_details(signature)
+                
+                if not transaction_data:
+                    logger.debug(f"   Could not fetch transaction data for {signature[:8]}")
+                    return
+                
+                logger.info(f"   ✓ Transaction data fetched successfully")
+                
+                # Try to parse this as a swap for each of our subscribed pools
+                for pool_addr, pool_info in self.subscribed_pools.items():
+                    trade = self.parse_raydium_swap(transaction_data, pool_addr)
                     
-                    # Check if this account is one of our subscribed pools
-                    for pool_addr, pool_info in self.subscribed_pools.items():
-                        # Try to parse this as a swap transaction
-                        trade = self.parse_raydium_swap(value, pool_addr)
+                    if trade:
+                        # We successfully parsed a trade! Notify all callbacks
+                        logger.info(f"   ✅ Trade detected for pool {pool_addr[:8]}")
                         
-                        if trade:
-                            # We got a valid trade! Notify all callbacks
-                            logger.info(
-                                f"💱 Trade detected: {trade['direction'].upper()} "
-                                f"${trade['size_usd']:.2f} @ {pool_addr[:8]}..."
-                            )
-                            
-                            # Call all registered callback functions
-                            for callback in self.trade_callbacks:
-                                try:
-                                    # Run the callback
-                                    # If it's async, await it; if sync, just call it
-                                    if asyncio.iscoroutinefunction(callback):
-                                        await callback(trade)
-                                    else:
-                                        callback(trade)
-                                except Exception as e:
-                                    logger.error(f"❌ Error in trade callback {callback.__name__}: {e}")
-                            
-                            break
-            
+                        for callback in self.trade_callbacks:
+                            try:
+                                if asyncio.iscoroutinefunction(callback):
+                                    await callback(trade)
+                                else:
+                                    callback(trade)
+                            except Exception as e:
+                                logger.error(f"❌ Error in trade callback {callback.__name__}: {e}")
+                        
+                        break  # Found the trade, no need to check other pools
+
         except json.JSONDecodeError as e:
             logger.error(f"❌ Failed to parse WebSocket message: {e}")
             self.stats['errors'] += 1
         except Exception as e:
             logger.error(f"❌ Error handling WebSocket message: {e}")
             self.stats['errors'] += 1
-    
-    
+
+
     async def listen(self):
         """
         Main listening loop that receives and processes WebSocket messages.
-        
-        This runs continuously, receiving messages from Helius and
-        processing them. If the connection drops, it will attempt to reconnect.
         """
         self.is_running = True
-        
+
         while self.is_running:
             try:
                 if not self.websocket:
-                    # Connection lost, try to reconnect
                     logger.warning("⚠️ WebSocket disconnected, attempting to reconnect...")
                     connected = await self.connect()
-                    
+
                     if connected and self.subscribed_pools:
-                        # Resubscribe to all our pools
                         logger.info("🔄 Resubscribing to pools after reconnection...")
                         for pool_addr, pool_info in self.subscribed_pools.items():
                             await self.subscribe_to_pool(
@@ -395,34 +416,39 @@ class HeliusWebSocketClient:
                                 pool_info['token_address'],
                                 pool_info.get('token_symbol', 'UNKNOWN')
                             )
-                    
-                    await asyncio.sleep(5)  # Wait before retrying
+
+                    await asyncio.sleep(5)
                     continue
-                
+
                 # Wait for and receive next message
                 message = await self.websocket.recv()
-                
+
                 # Process the message
                 await self.handle_message(message)
-                
+
             except websockets.exceptions.ConnectionClosed:
                 logger.warning("⚠️ WebSocket connection closed")
                 self.websocket = None
                 await asyncio.sleep(5)
-                
+
             except Exception as e:
                 logger.error(f"❌ Error in listen loop: {e}")
                 await asyncio.sleep(1)
-    
-    
+
+
     async def close(self):
-        """Clean shutdown of WebSocket connection."""
+        """Clean shutdown of WebSocket connection and HTTP session."""
         self.is_running = False
+        
         if self.websocket:
             await self.websocket.close()
             logger.info("🔌 WebSocket connection closed")
-    
-    
+        
+        if self.http_session:
+            await self.http_session.close()
+            logger.info("🔌 HTTP session closed")
+
+
     def get_stats(self) -> Dict:
-        """Return current statistics about WebSocket activity."""
+        """Return current statistics about activity."""
         return self.stats.copy()
