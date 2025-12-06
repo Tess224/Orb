@@ -1678,6 +1678,8 @@ def run_websocket_loop(api_key: str):
         # (Each thread needs its own event loop for async operations)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        global websocket_loop
+        websocket_loop = loop
         
         # Create the WebSocket client
         websocket_client = HeliusWebSocketClient(api_key)
@@ -1737,6 +1739,41 @@ def start_websocket_background():
     # Give it a moment to initialize
     time.sleep(2)
 
+
+def subscribe_to_pool_from_sync(pool_address: str, token_address: str):
+    """
+    Subscribe to a pool from synchronous Flask code.
+    
+    This bridges the gap between sync Flask and async WebSocket code.
+    """
+    global websocket_client, websocket_loop
+    
+    if not websocket_client or not websocket_loop:
+        logger.warning("⚠️ Cannot subscribe - WebSocket not initialized")
+        return False
+    
+    try:
+        # Create the async subscription coroutine
+        async def do_subscribe():
+            await websocket_client.subscribe_to_pool(
+                pool_address,
+                token_address,
+                token_address[:8]  # Use shortened address as symbol
+            )
+        
+        # Schedule it to run in the WebSocket's event loop
+        future = asyncio.run_coroutine_threadsafe(do_subscribe(), websocket_loop)
+        
+        # Wait up to 5 seconds for it to complete
+        future.result(timeout=5)
+        
+        logger.info(f"✅ Subscribed WebSocket to pool {pool_address[:8]}...")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error subscribing to pool: {e}")
+        return False
+        
 
 def get_raydium_pool_address(token_address: str) -> Optional[str]:
     """
@@ -1847,7 +1884,12 @@ def start_tracking_token_realtime(token_address: str, pool_address: str, liquidi
         logger.info(f"✅ Started real-time tracking for {token_address[:8]}...")
         logger.info(f"   Pool: {pool_address[:8]}...")
         logger.info(f"   Liquidity: ${liquidity_usd:,.0f}")
-        
+
+        # Actually subscribe the WebSocket to this pool
+subscription_success = subscribe_to_pool_from_sync(pool_address, token_address)
+
+if not subscription_success:
+    logger.warning("⚠️ WebSocket subscription failed - real-time data may not work")
         return True
         
     except Exception as e:
