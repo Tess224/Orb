@@ -180,6 +180,12 @@ class HeliusWebSocketClient:
             Parsed trade dict or None if not a valid swap
         """
         try:
+            # NEW: Log the raw transaction data so we can see what Helius is sending
+        logger.info(f"🔍 Parsing transaction for pool {pool_address[:8]}...")
+        logger.info(f"   Transaction keys: {list(transaction_data.keys())}")
+        
+        # Get token info for this pool
+        pool_info = self.subscribed_pools.get(pool_address, {})
             # Get token info for this pool
             pool_info = self.subscribed_pools.get(pool_address, {})
             token_address = pool_info.get('token_address')
@@ -191,7 +197,14 @@ class HeliusWebSocketClient:
             # Helius sends this in their specific format
             meta = transaction_data.get('meta', {})
             transaction = transaction_data.get('transaction', {})
-            
+
+            # NEW: Log what we found in the metadata
+        logger.info(f"   Meta keys: {list(meta.keys()) if meta else 'None'}")
+        logger.info(f"   Has preTokenBalances: {bool(meta.get('preTokenBalances'))}")
+        logger.info(f"   Has postTokenBalances: {bool(meta.get('postTokenBalances'))}")
+        logger.info(f"   Has preBalances: {bool(meta.get('preBalances'))}")
+        logger.info(f"   Has postBalances: {bool(meta.get('postBalances'))}")
+
             # Get timestamp from block time
             block_time = transaction_data.get('blockTime', 0)
             
@@ -272,10 +285,12 @@ class HeliusWebSocketClient:
             
             self.stats['trades_parsed'] += 1
             return trade
-            
+
         except Exception as e:
             logger.warning(f"⚠️ Error parsing swap transaction: {e}")
             self.stats['errors'] += 1
+            logger.info(f"   ❌ Not a valid swap - token_change: {token_change}, sol_change: {sol_change}")
+
             return None
     
     
