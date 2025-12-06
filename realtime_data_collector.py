@@ -85,6 +85,7 @@ class HeliusWebSocketClient:
                 ping_timeout=10,
                 close_timeout=10
             )
+        
             
             # Also create an HTTP session for fetching transaction details
             self.http_session = aiohttp.ClientSession()
