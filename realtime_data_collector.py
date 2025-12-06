@@ -313,17 +313,15 @@ class HeliusWebSocketClient:
             logger.info(f"📨 WebSocket message received")
             logger.info(f"   Message structure: {list(data.keys())}")
         
-            # Check if this is a subscription notification (has 'params')
-            if 'params' in data:
-            logger.info(f"   ✓ Has params - this is a notification")
-            result = data['params'].get('result', {})
-            logger.info(f"   Result structure: {list(result.keys()) if result else 'None'}")
             
             # Check if this is a subscription notification (has 'params')
             if 'params' in data:
                 result = data['params'].get('result', {})
                 context = result.get('context', {})
                 value = result.get('value', {})
+              
+                logger.info(f"   ✓ Has params - this is a notification")
+                logger.info(f"   Result structure: {list(result.keys()) if result else 'None'}")
                 
                 # Extract account address this update is for
                 # This should match one of our subscribed pools
