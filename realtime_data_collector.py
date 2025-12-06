@@ -322,7 +322,12 @@ class HeliusWebSocketClient:
               
                 logger.info(f"   ✓ Has params - this is a notification")
                 logger.info(f"   Result structure: {list(result.keys()) if result else 'None'}")
-                
+                # NEW: Add these lines to see what's actually in the value
+                value = result.get('value', {})
+                logger.info(f"   Value structure: {list(value.keys()) if value else 'None'}")
+                if value:
+                    logger.info(f"   Value has 'account': {bool(value.get('account'))}")
+                    logger.info(f"   Value has 'data': {bool(value.get('data'))}")
                 # Extract account address this update is for
                 # This should match one of our subscribed pools
                 account = data['params'].get('subscription')
