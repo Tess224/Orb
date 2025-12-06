@@ -1747,7 +1747,7 @@ def get_raydium_pool_address(token_address: str) -> Optional[str]:
             return None
         
         # Use Birdeye's market list endpoint
-        url = f"https://public-api.birdeye.so/defi/v3/token/market"
+        url = f"https://public-api.birdeye.so/defi/v2/markets"
         params = {'address': token_address}
         headers = {'X-API-KEY': BIRDEYE_API_KEY}
         
