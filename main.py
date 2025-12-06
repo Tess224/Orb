@@ -1739,9 +1739,7 @@ def start_websocket_background():
 
 def get_raydium_pool_address(token_address: str) -> Optional[str]:
     """
-    Find the Raydium pool address for a token using Birdeye.
-    
-    We need the pool address to subscribe to its transactions.
+    Find the pool address for a token using Birdeye, with flexible matching.
     """
     try:
         if not BIRDEYE_API_KEY:
@@ -1753,7 +1751,7 @@ def get_raydium_pool_address(token_address: str) -> Optional[str]:
         params = {'address': token_address}
         headers = {'X-API-KEY': BIRDEYE_API_KEY}
         
-        logger.info(f"🔍 Looking for Raydium pool for token {token_address[:8]}...")
+        logger.info(f"🔍 Looking for pool for token {token_address[:8]}...")
         
         response = requests.get(url, params=params, headers=headers, timeout=10)
         
@@ -1762,11 +1760,39 @@ def get_raydium_pool_address(token_address: str) -> Optional[str]:
             if data.get('success') and data.get('data'):
                 markets = data['data'].get('items', [])
                 
-                # Find Raydium pools
-                raydium_pools = [
-                    m for m in markets 
-                    if m.get('source') == 'Raydium'
-                ]
+                if not markets:
+                    logger.warning(f"⚠️ No markets found for {token_address[:8]}")
+                    return None
+                
+                # Log what we found for debugging
+                logger.info(f"  Found {len(markets)} markets for this token")
+                for i, m in enumerate(markets[:3]):  # Log first 3 for debugging
+                    logger.info(f"    Market {i+1}: source={m.get('source')}, liquidity=${m.get('liquidity', 0):,.0f}")
+                
+                # Try multiple matching strategies
+                # Strategy 1: Look for Raydium specifically
+                raydium_pools = [m for m in markets if m.get('source') == 'Raydium']
+                
+                # Strategy 2: If no exact "Raydium", try case-insensitive
+                if not raydium_pools:
+                    raydium_pools = [
+                        m for m in markets 
+                        if m.get('source', '').lower().startswith('raydium')
+                    ]
+                
+                # Strategy 3: If still nothing, try looking for pump.fun pools
+                # (Many new tokens start on pump.fun which uses Raydium underneath)
+                if not raydium_pools:
+                    raydium_pools = [
+                        m for m in markets 
+                        if 'pump' in m.get('source', '').lower() or 
+                           'amm' in m.get('source', '').lower()
+                    ]
+                
+                # Strategy 4: If STILL nothing, just take the pool with highest liquidity
+                if not raydium_pools:
+                    logger.warning(f"  ⚠️ No Raydium-specific pools, using highest liquidity pool")
+                    raydium_pools = markets
                 
                 if raydium_pools:
                     # Sort by liquidity, take the biggest one
@@ -1774,16 +1800,17 @@ def get_raydium_pool_address(token_address: str) -> Optional[str]:
                     pool_addr = raydium_pools[0].get('address')
                     
                     if pool_addr:
-                        logger.info(f"✅ Found Raydium pool: {pool_addr[:8]}...")
+                        source = raydium_pools[0].get('source', 'Unknown')
+                        liq = raydium_pools[0].get('liquidity', 0)
+                        logger.info(f"✅ Found pool: {pool_addr[:8]}... (source: {source}, liq: ${liq:,.0f})")
                         return pool_addr
         
-        logger.warning(f"⚠️ No Raydium pool found for {token_address[:8]}")
+        logger.warning(f"⚠️ Could not find any pool for {token_address[:8]}")
         return None
         
     except Exception as e:
         logger.error(f"❌ Error finding pool: {e}")
         return None
-
 
 def start_tracking_token_realtime(token_address: str, pool_address: str, liquidity_usd: float):
     """
