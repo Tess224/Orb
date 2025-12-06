@@ -5,3 +5,4 @@ gunicorn==21.2.0
 solana==0.36.10
 solders==0.25.0
 websockets
+aiohttp
