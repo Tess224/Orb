@@ -313,8 +313,8 @@ class HeliusWebSocketClient:
             logger.info(f"📨 WebSocket message received")
             logger.info(f"   Message structure: {list(data.keys())}")
         
-        # Check if this is a subscription notification (has 'params')
-        if 'params' in data:
+            # Check if this is a subscription notification (has 'params')
+            if 'params' in data:
             logger.info(f"   ✓ Has params - this is a notification")
             result = data['params'].get('result', {})
             logger.info(f"   Result structure: {list(result.keys()) if result else 'None'}")
