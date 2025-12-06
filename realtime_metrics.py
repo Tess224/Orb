@@ -33,122 +33,247 @@ class Trade:
 
 @dataclass
 class MetricsSnapshot:
-    """Metrics snapshot - unchanged from original."""
+    """
+    Snapshot of calculated metrics - now includes token age context.
+    
+    The age field helps downstream systems understand which timeframes
+    are reliable for this token.
+    """
     timestamp: float
+    token_age_hours: float  # NEW: How many hours we've been tracking this token
+    
+    # Volume metrics - these windows are now dynamically selected
     volume_1m: float = 0.0
     volume_5m: float = 0.0
     volume_15m: float = 0.0
     volume_1h: float = 0.0
-    volume_4h: float = 0.0  # NEW: Added 4-hour window for VTS calculation
+    volume_4h: float = 0.0
     volume_24h: float = 0.0
+    
+    # Buy/sell breakdown
     buy_volume_1m: float = 0.0
     buy_volume_5m: float = 0.0
     buy_volume_1h: float = 0.0
     sell_volume_1m: float = 0.0
     sell_volume_5m: float = 0.0
     sell_volume_1h: float = 0.0
+    
+    # Trade counts
     trade_count_1m: int = 0
     trade_count_5m: int = 0
     trade_count_1h: int = 0
+    
+    # Price data
     current_price: float = 0.0
     price_change_1m: float = 0.0
     price_change_5m: float = 0.0
     price_change_1h: float = 0.0
+    
+    # Derived metrics
     bsr_1h: float = 1.0
     vlr_1h: float = 0.0
     pii: float = 0.0
     vts: float = 1.0
     vei: float = 1.0
+    
+    # Phase classification
     phase: str = 'dormant'
+    
+    # Metadata
     liquidity_usd: float = 0.0
     total_trades_processed: int = 0
-    
-"""
-Updated TokenMetricsTracker with VLMPS-compliant metric calculations.
 
-KEY CHANGES FROM ORIGINAL:
-1. Volume Trend Score now uses multi-timeframe weighted calculation
-2. Volume Exhaustion Index uses hourly comparisons (more stable)
-3. Added proper baseline tracking with 7-day and 30-day averages
-4. Enhanced phase classification with better thresholds
-"""
 
 class TokenMetricsTracker:
     """
-    Tracks real-time metrics for a single token with VLMPS-compliant calculations.
+    Tracks real-time metrics for a single token with dynamic timeframe adaptation.
     
-    This updated version fixes several key metrics to match the specification
-    in the Volume-Liquidity Magnitude Prediction System document.
+    MAJOR ENHANCEMENT:
+    The tracker now adjusts which time windows it uses for calculations based on
+    how long the token has been monitored. This prevents absurd comparisons like
+    "current 5-minute volume is 300% of the 24-hour average" when the token has
+    only been tracked for 20 minutes.
+    
+    Age-Based Window Selection:
+    - Under 1 hour: Use ultra-short windows (30s, 2m, 5m)
+    - 1-6 hours: Use short windows (1m, 5m, 15m, 30m)
+    - 6-24 hours: Use medium windows (5m, 15m, 1h, 4h)
+    - Over 24 hours: Use full windows (5m, 15m, 1h, 4h, 24h)
     """
 
     def __init__(self, token_address: str, liquidity_usd: float, market_cap_usd: Optional[float] = None):
+        """
+        Initialize metrics tracker for a token.
+        
+        The tracker records the exact moment it starts monitoring, which becomes
+        the reference point for all age calculations.
+        """
         self.token_address = token_address
         self.liquidity_usd = liquidity_usd
         self.market_cap_usd = market_cap_usd
-
+        
+        # NEW: Record when we started tracking this token
+        # This is the anchor point for all age-based decisions
+        self.tracking_started_at = time.time()
+        
         # Time-windowed trade storage
+        # These deques store raw trade data at different granularities
+        self.trades_30s: Deque[Trade] = deque(maxlen=500)    # NEW: Ultra-short for very young tokens
         self.trades_1m: Deque[Trade] = deque(maxlen=1000)
+        self.trades_2m: Deque[Trade] = deque(maxlen=2000)    # NEW: Short window for young tokens
         self.trades_5m: Deque[Trade] = deque(maxlen=5000)
         self.trades_15m: Deque[Trade] = deque(maxlen=10000)
+        self.trades_30m: Deque[Trade] = deque(maxlen=20000)  # NEW: Medium window
         self.trades_1h: Deque[Trade] = deque(maxlen=50000)
-        self.trades_4h: Deque[Trade] = deque(maxlen=200000)  # NEW: Added 4-hour window
+        self.trades_4h: Deque[Trade] = deque(maxlen=200000)
         self.trades_24h: Deque[Trade] = deque(maxlen=500000)
-
-        # Historical snapshots for state transition analysis
+        
+        # Historical snapshots taken every minute
         self.metric_history: List[MetricsSnapshot] = []
-
-        # NEW: Enhanced baseline tracking
-        # Instead of just tracking the previous hour as "baseline", we now
-        # track longer-term averages to represent true normal activity levels
-        self.hourly_volumes: Deque[float] = deque(maxlen=168)  # Last 7 days of hourly volumes
+        
+        # Baseline tracking with age-appropriate windows
+        self.hourly_volumes: Deque[float] = deque(maxlen=168)
         self.baseline_volume_5m = 0.0
         self.baseline_volume_15m = 0.0
         self.baseline_volume_1h = 0.0
         self.baseline_volume_4h = 0.0
         self.baseline_volume_24h = 0.0
         
-        # Track when baselines were last updated
         self.last_baseline_update = time.time()
         self.last_snapshot_time = time.time()
         
-        # Track hourly peak volumes for VEI calculation
-        # This stores the volume from each of the last 24 hours
+        # Track hourly peak volumes for VEI
         self.hourly_volume_history: Deque[float] = deque(maxlen=24)
         self.last_hourly_record = time.time()
-
+        
         # Statistics
         self.total_trades = 0
-        self.created_at = time.time()
+        
+        logger.info(f"📊 Initialized dynamic-timeframe tracker for {token_address[:8]}... (Liq: ${liquidity_usd:,.0f})")
 
-        logger.info(f"📊 Initialized VLMPS-compliant tracker for {token_address[:8]}... (Liq: ${liquidity_usd:,.0f})")
+
+    def get_token_age_hours(self) -> float:
+        """
+        Calculate how many hours we've been tracking this token.
+        
+        This is the key metric that drives all timeframe selection decisions.
+        Returns a float so we can handle fractional hours (e.g., 0.5 hours = 30 minutes).
+        """
+        age_seconds = time.time() - self.tracking_started_at
+        age_hours = age_seconds / 3600.0
+        return age_hours
+
+
+    def get_appropriate_timeframes(self) -> Dict[str, int]:
+        """
+        Select which time windows to use based on token age.
+        
+        This is the heart of the dynamic timeframe system. We return a dictionary
+        mapping timeframe names to their durations in seconds. The calling code
+        uses these windows for all calculations.
+        
+        The logic here is based on a simple principle: never compare current activity
+        to a baseline that spans a longer period than the token's entire tracked lifetime.
+        
+        Returns:
+            Dictionary mapping timeframe labels to durations in seconds
+            Example: {'short': 120, 'medium': 300, 'long': 900, 'baseline': 1800}
+        """
+        age_hours = self.get_token_age_hours()
+        
+        if age_hours < 1.0:
+            # VERY YOUNG TOKEN (under 1 hour old)
+            # Use ultra-short windows. We can only compare recent seconds/minutes.
+            # Example: A token tracked for 20 minutes can compare 30s to 2m, but not to 1h.
+            return {
+                'ultra_short': 30,      # 30 seconds for immediate activity
+                'short': 120,            # 2 minutes
+                'medium': 300,           # 5 minutes
+                'baseline_short': 120,   # Compare to 2-minute average
+                'baseline_medium': 300   # Compare to 5-minute average
+            }
+            
+        elif age_hours < 6.0:
+            # YOUNG TOKEN (1-6 hours old)
+            # Use short to medium windows. Hourly comparisons are now meaningful.
+            return {
+                'short': 60,             # 1 minute
+                'medium': 300,           # 5 minutes
+                'long': 900,             # 15 minutes
+                'baseline_short': 300,   # Compare to 5-minute average
+                'baseline_medium': 900,  # Compare to 15-minute average
+                'baseline_long': 1800    # Compare to 30-minute average
+            }
+            
+        elif age_hours < 24.0:
+            # MATURING TOKEN (6-24 hours old)
+            # Use medium to long windows. 4-hour comparisons are meaningful.
+            return {
+                'short': 300,            # 5 minutes
+                'medium': 900,           # 15 minutes
+                'long': 3600,            # 1 hour
+                'baseline_short': 900,   # Compare to 15-minute average
+                'baseline_medium': 3600, # Compare to 1-hour average
+                'baseline_long': 14400   # Compare to 4-hour average
+            }
+            
+        else:
+            # MATURE TOKEN (over 24 hours)
+            # Use full windows. Daily comparisons are meaningful.
+            return {
+                'short': 300,            # 5 minutes
+                'medium': 900,           # 15 minutes
+                'long': 3600,            # 1 hour
+                'extended': 14400,       # 4 hours
+                'baseline_short': 3600,  # Compare to 1-hour average
+                'baseline_medium': 14400,# Compare to 4-hour average
+                'baseline_long': 86400   # Compare to 24-hour average
+            }
 
 
     def _cleanup_old_trades(self):
-        """Remove trades that have aged beyond their time windows."""
+        """
+        Remove trades that have aged beyond their time windows.
+        
+        This now cleans ALL our time windows, including the new ones for young tokens.
+        """
         current_time = time.time()
-
+        
+        # Clean all windows
+        while self.trades_30s and current_time - self.trades_30s[0].timestamp > 30:
+            self.trades_30s.popleft()
+            
         while self.trades_1m and current_time - self.trades_1m[0].timestamp > 60:
             self.trades_1m.popleft()
-
+            
+        while self.trades_2m and current_time - self.trades_2m[0].timestamp > 120:
+            self.trades_2m.popleft()
+            
         while self.trades_5m and current_time - self.trades_5m[0].timestamp > 300:
             self.trades_5m.popleft()
-
+            
         while self.trades_15m and current_time - self.trades_15m[0].timestamp > 900:
             self.trades_15m.popleft()
-
+            
+        while self.trades_30m and current_time - self.trades_30m[0].timestamp > 1800:
+            self.trades_30m.popleft()
+            
         while self.trades_1h and current_time - self.trades_1h[0].timestamp > 3600:
             self.trades_1h.popleft()
-
-        # NEW: Clean 4-hour window
+            
         while self.trades_4h and current_time - self.trades_4h[0].timestamp > 14400:
             self.trades_4h.popleft()
-
+            
         while self.trades_24h and current_time - self.trades_24h[0].timestamp > 86400:
             self.trades_24h.popleft()
 
 
     def add_trade(self, trade_data: Dict):
-        """Process a new trade and update all metrics - unchanged from original."""
+        """
+        Process a new trade and update all metrics.
+        
+        Now adds trades to ALL time windows, including the new short ones.
+        """
         try:
             trade = Trade(
                 timestamp=trade_data['timestamp'],
@@ -159,37 +284,39 @@ class TokenMetricsTracker:
                 size_usd=trade_data['size_usd'],
                 transaction_signature=trade_data['transaction_signature']
             )
-
-            # Add to all time windows
+            
+            # Add to ALL time windows
+            self.trades_30s.append(trade)
             self.trades_1m.append(trade)
+            self.trades_2m.append(trade)
             self.trades_5m.append(trade)
             self.trades_15m.append(trade)
+            self.trades_30m.append(trade)
             self.trades_1h.append(trade)
-            self.trades_4h.append(trade)  # NEW: Add to 4-hour window
+            self.trades_4h.append(trade)
             self.trades_24h.append(trade)
-
+            
             self.total_trades += 1
             self._cleanup_old_trades()
-
-            # NEW: Record hourly volumes for baseline tracking
+            
+            # Record hourly volumes
             current_time = time.time()
             if current_time - self.last_hourly_record >= 3600:
-                # An hour has passed, record the volume from that hour
                 metrics_1h = self._calculate_volume_metrics(self.trades_1h)
                 self.hourly_volume_history.append(metrics_1h['total_volume'])
                 self.last_hourly_record = current_time
-
+            
             # Take snapshot every minute
             if current_time - self.last_snapshot_time >= 60:
                 self._take_snapshot()
                 self.last_snapshot_time = current_time
-
+            
             if trade.size_usd >= 1000:
                 logger.info(
                     f"💰 Large {trade.direction.upper()}: ${trade.size_usd:,.0f} "
-                    f"on {self.token_address[:8]}..."
+                    f"on {self.token_address[:8]}... (age: {self.get_token_age_hours():.1f}h)"
                 )
-
+        
         except Exception as e:
             logger.error(f"❌ Error processing trade: {e}")
 
@@ -200,14 +327,14 @@ class TokenMetricsTracker:
         buy_volume = 0.0
         sell_volume = 0.0
         trade_count = len(trades)
-
+        
         for trade in trades:
             total_volume += trade.size_usd
             if trade.direction == 'buy':
                 buy_volume += trade.size_usd
             else:
                 sell_volume += trade.size_usd
-
+        
         return {
             'total_volume': total_volume,
             'buy_volume': buy_volume,
@@ -216,162 +343,163 @@ class TokenMetricsTracker:
         }
 
 
+    def _get_baseline_volume(self, timeframe_seconds: int) -> float:
+        """
+        Get the appropriate baseline volume for a given timeframe.
+        
+        NEW METHOD: This intelligently selects or calculates a baseline that
+        makes sense for both the requested timeframe and the token's age.
+        
+        For very young tokens, we might not have a full hour of history, so
+        we scale down from what we do have. For mature tokens, we use the
+        established baselines.
+        """
+        age_hours = self.get_token_age_hours()
+        
+        # If the token is younger than the requested timeframe, we can't
+        # have a meaningful baseline yet. Return a conservative estimate.
+        timeframe_hours = timeframe_seconds / 3600.0
+        if age_hours < timeframe_hours:
+            # Not enough history yet. Use what we have proportionally.
+            # If we have 30 minutes of history and need a 1-hour baseline,
+            # we'll extrapolate from the 30 minutes we do have.
+            if self.trades_30m:
+                actual_metrics = self._calculate_volume_metrics(self.trades_30m)
+                # Scale up proportionally
+                scale_factor = timeframe_hours / (age_hours if age_hours > 0 else 0.5)
+                return actual_metrics['total_volume'] * scale_factor
+            return 1.0  # Fallback to avoid division by zero
+        
+        # We have enough history. Return the appropriate baseline.
+        if timeframe_seconds <= 300:  # 5 minutes
+            return max(self.baseline_volume_5m, 1.0)
+        elif timeframe_seconds <= 900:  # 15 minutes
+            return max(self.baseline_volume_15m, 1.0)
+        elif timeframe_seconds <= 3600:  # 1 hour
+            return max(self.baseline_volume_1h, 1.0)
+        elif timeframe_seconds <= 14400:  # 4 hours
+            return max(self.baseline_volume_4h, 1.0)
+        else:  # 24 hours
+            return max(self.baseline_volume_24h, 1.0)
+
+
     def _update_baselines(self):
         """
-        NEW METHOD: Update baseline "normal" activity levels.
+        Update baseline "normal" activity levels with age-appropriate windows.
         
-        This calculates what "normal" volume looks like for this token
-        by averaging historical activity. We use these baselines to detect
-        when current activity is elevated (VTS > 1) or suppressed (VTS < 1).
-        
-        The key insight: we want to compare current activity to the token's
-        typical behavior over days/weeks, not just the previous hour.
+        ENHANCED: Now only updates baselines for timeframes where we have
+        sufficient history to make them meaningful.
         """
         current_time = time.time()
         
-        # Only update baselines every hour to avoid excessive recalculation
         if current_time - self.last_baseline_update < 3600:
             return
-            
-        # Calculate average hourly volume from our history
-        # We need at least a few hours of data to have meaningful averages
-        if len(self.hourly_volumes) >= 3:
-            self.baseline_volume_1h = sum(self.hourly_volumes) / len(self.hourly_volumes)
-        else:
-            # Not enough history yet, use current hour as baseline
-            metrics_1h = self._calculate_volume_metrics(self.trades_1h)
-            self.baseline_volume_1h = max(metrics_1h['total_volume'], 1.0)  # Avoid zero
-
-        # For other timeframes, we derive from the hourly baseline
-        # These are proportional estimates based on time window size
-        self.baseline_volume_5m = self.baseline_volume_1h / 12  # 5 min is 1/12 of an hour
-        self.baseline_volume_15m = self.baseline_volume_1h / 4  # 15 min is 1/4 of an hour
-        self.baseline_volume_4h = self.baseline_volume_1h * 4
-        self.baseline_volume_24h = self.baseline_volume_1h * 24
-
+        
+        age_hours = self.get_token_age_hours()
+        
+        # Only calculate baselines for timeframes where we have enough history
+        if age_hours >= 0.5:  # At least 30 minutes
+            if self.trades_30m:
+                metrics = self._calculate_volume_metrics(self.trades_30m)
+                self.baseline_volume_5m = metrics['total_volume'] / 6  # 30min / 5min = 6
+        
+        if age_hours >= 1.0:  # At least 1 hour
+            if len(self.hourly_volumes) >= 1:
+                self.baseline_volume_1h = sum(self.hourly_volumes) / len(self.hourly_volumes)
+            else:
+                metrics_1h = self._calculate_volume_metrics(self.trades_1h)
+                self.baseline_volume_1h = max(metrics_1h['total_volume'], 1.0)
+        
+        if age_hours >= 4.0:  # At least 4 hours
+            if self.baseline_volume_1h > 0:
+                self.baseline_volume_4h = self.baseline_volume_1h * 4
+        
+        if age_hours >= 24.0:  # At least 24 hours
+            if self.baseline_volume_1h > 0:
+                self.baseline_volume_24h = self.baseline_volume_1h * 24
+        
+        # Always derive short timeframe baselines from what we have
+        if self.baseline_volume_1h > 0:
+            self.baseline_volume_15m = self.baseline_volume_1h / 4
+            self.baseline_volume_5m = self.baseline_volume_1h / 12
+        
         self.last_baseline_update = current_time
-
-        logger.debug(f"📊 Updated baselines for {self.token_address[:8]}: 1h=${self.baseline_volume_1h:,.0f}")
+        
+        logger.debug(
+            f"📊 Updated baselines for {self.token_address[:8]} "
+            f"(age: {age_hours:.1f}h, 1h baseline: ${self.baseline_volume_1h:,.0f})"
+        )
 
 
     def _calculate_volume_trend_score(self, metrics_5m: Dict, metrics_15m: Dict, 
                                      metrics_1h: Dict, metrics_4h: Dict, 
                                      metrics_24h: Dict) -> float:
         """
-        NEW METHOD: Calculate Volume Trend Score using multi-timeframe weighted approach.
+        Calculate Volume Trend Score using age-appropriate baselines.
         
-        This is a KEY IMPROVEMENT over the original simple ratio.
-        
-        The VLMPS document specifies that VTS should compare activity across
-        MULTIPLE timeframes simultaneously, not just one. This catches momentum
-        shifts that might be visible in short timeframes but not yet in long ones,
-        or vice versa.
-        
-        Formula from document:
-        VTS = (Vol_5m/Avg_5m × 0.10) + 
-              (Vol_15m/Avg_15m × 0.15) + 
-              (Vol_1h/Avg_1h × 0.25) + 
-              (Vol_4h/Avg_4h × 0.25) + 
-              (Vol_24h/Avg_24h × 0.25)
-        
-        The weights are chosen to give more importance to medium-term trends
-        (1h, 4h, 24h) while still catching very recent shifts (5m, 15m).
-        
-        Args:
-            metrics_5m, metrics_15m, etc: Volume metrics for each timeframe
-            
-        Returns:
-            VTS value where 1.0 = normal, >1.0 = elevated, <1.0 = suppressed
+        ENHANCED: Now uses the get_baseline_volume method to ensure we're
+        comparing against meaningful baselines for this token's age.
         """
-        # Make sure we have valid baselines (avoid division by zero)
-        # If baselines aren't set yet, update them now
-        if self.baseline_volume_1h <= 0:
-            self._update_baselines()
+        self._update_baselines()
         
-        # Calculate the ratio for each timeframe
-        # If baseline is still zero, default to 1.0 (no elevation/suppression)
+        # Get age-appropriate baselines
+        baseline_5m = self._get_baseline_volume(300)
+        baseline_15m = self._get_baseline_volume(900)
+        baseline_1h = self._get_baseline_volume(3600)
+        baseline_4h = self._get_baseline_volume(14400)
+        baseline_24h = self._get_baseline_volume(86400)
         
-        ratio_5m = 1.0
-        if self.baseline_volume_5m > 0:
-            ratio_5m = metrics_5m['total_volume'] / self.baseline_volume_5m
-            
-        ratio_15m = 1.0
-        if self.baseline_volume_15m > 0:
-            ratio_15m = metrics_15m['total_volume'] / self.baseline_volume_15m
-            
-        ratio_1h = 1.0
-        if self.baseline_volume_1h > 0:
-            ratio_1h = metrics_1h['total_volume'] / self.baseline_volume_1h
-            
-        ratio_4h = 1.0
-        if self.baseline_volume_4h > 0:
-            ratio_4h = metrics_4h['total_volume'] / self.baseline_volume_4h
-            
-        ratio_24h = 1.0
-        if self.baseline_volume_24h > 0:
-            ratio_24h = metrics_24h['total_volume'] / self.baseline_volume_24h
+        # Calculate ratios
+        ratio_5m = metrics_5m['total_volume'] / baseline_5m if baseline_5m > 0 else 1.0
+        ratio_15m = metrics_15m['total_volume'] / baseline_15m if baseline_15m > 0 else 1.0
+        ratio_1h = metrics_1h['total_volume'] / baseline_1h if baseline_1h > 0 else 1.0
+        ratio_4h = metrics_4h['total_volume'] / baseline_4h if baseline_4h > 0 else 1.0
+        ratio_24h = metrics_24h['total_volume'] / baseline_24h if baseline_24h > 0 else 1.0
         
-        # Apply the weighted formula from the document
-        vts = (
-            (ratio_5m * 0.10) +
-            (ratio_15m * 0.15) +
-            (ratio_1h * 0.25) +
-            (ratio_4h * 0.25) +
-            (ratio_24h * 0.25)
-        )
+        # For very young tokens, weight shorter timeframes more heavily
+        age_hours = self.get_token_age_hours()
         
-        # Log if we're seeing significant elevation
+        if age_hours < 1.0:
+            # Very young: focus almost entirely on short windows
+            vts = (ratio_5m * 0.7) + (ratio_15m * 0.3)
+        elif age_hours < 6.0:
+            # Young: weight short and medium windows
+            vts = (ratio_5m * 0.3) + (ratio_15m * 0.4) + (ratio_1h * 0.3)
+        elif age_hours < 24.0:
+            # Maturing: standard weighting without 24h
+            vts = (ratio_5m * 0.15) + (ratio_15m * 0.20) + (ratio_1h * 0.35) + (ratio_4h * 0.30)
+        else:
+            # Mature: use full multi-timeframe weighting
+            vts = (
+                (ratio_5m * 0.10) +
+                (ratio_15m * 0.15) +
+                (ratio_1h * 0.25) +
+                (ratio_4h * 0.25) +
+                (ratio_24h * 0.25)
+            )
+        
         if vts > 3.0:
-            logger.info(f"🔥 High VTS detected on {self.token_address[:8]}: {vts:.2f}")
+            logger.info(
+                f"🔥 High VTS detected on {self.token_address[:8]}: {vts:.2f} "
+                f"(age: {age_hours:.1f}h)"
+            )
         
         return vts
 
 
     def _calculate_volume_exhaustion_index(self, metrics_1h: Dict) -> float:
-        """
-        NEW METHOD: Calculate Volume Exhaustion Index using hourly comparison.
-        
-        This is another KEY IMPROVEMENT for stability.
-        
-        The original code compared current 1-minute volume (extrapolated to hourly)
-        against the peak extrapolated minute volume. This was too noisy because
-        individual minutes can be very volatile.
-        
-        The VLMPS approach: compare current HOUR's volume to the PEAK HOUR
-        in the last 24 hours. This is much more stable because hourly volumes
-        smooth out the minute-to-minute noise.
-        
-        Think of it like this:
-        - Old way: "Is this minute as busy as the busiest minute today?"
-        - New way: "Is this hour as busy as the busiest hour today?"
-        
-        The new way gives you a clearer signal of actual exhaustion rather than
-        just normal minute-to-minute fluctuation.
-        
-        Args:
-            metrics_1h: Current hour's volume metrics
-            
-        Returns:
-            VEI where 1.0 = at peak, 0.5 = half of peak, 0.0 = no activity
-        """
+        """Calculate Volume Exhaustion Index - unchanged from original."""
         current_hour_volume = metrics_1h['total_volume']
         
-        # If we don't have hourly history yet, we can't calculate VEI properly
         if len(self.hourly_volume_history) < 2:
-            return 1.0  # Default to "not exhausted" when we lack data
+            return 1.0
         
-        # Find the peak hourly volume in our history
         peak_hour_volume = max(self.hourly_volume_history)
         
-        # If peak is zero (no trading), return 1.0 to avoid false exhaustion signal
         if peak_hour_volume <= 0:
             return 1.0
         
-        # Calculate the ratio
         vei = current_hour_volume / peak_hour_volume
-        
-        # VEI should be clamped between 0 and 1
-        # (Current volume can't exceed peak by definition, but just to be safe)
         vei = max(0.0, min(1.0, vei))
         
         return vei
@@ -379,87 +507,85 @@ class TokenMetricsTracker:
 
     def _take_snapshot(self):
         """
-        Updated snapshot method with improved metric calculations.
+        Create a snapshot with age-appropriate metrics.
         
-        The key changes here are:
-        1. We now calculate 4-hour metrics for VTS
-        2. We use the new multi-timeframe VTS calculation
-        3. We use the new hourly-based VEI calculation
-        4. We update baselines periodically
+        ENHANCED: Now includes token age in the snapshot and uses appropriate
+        baselines for all calculations.
         """
         current_time = time.time()
-
-        # Update baselines if needed (this checks internally if it's time)
+        age_hours = self.get_token_age_hours()
+        
         self._update_baselines()
-
-        # Calculate metrics for all time windows
+        
+        # Calculate metrics for all windows (we always collect all data)
         metrics_1m = self._calculate_volume_metrics(self.trades_1m)
         metrics_5m = self._calculate_volume_metrics(self.trades_5m)
         metrics_15m = self._calculate_volume_metrics(self.trades_15m)
         metrics_1h = self._calculate_volume_metrics(self.trades_1h)
-        metrics_4h = self._calculate_volume_metrics(self.trades_4h)  # NEW
+        metrics_4h = self._calculate_volume_metrics(self.trades_4h)
         metrics_24h = self._calculate_volume_metrics(self.trades_24h)
-
-        # Current price from most recent trade
+        
+        # Current price
         current_price = self.trades_1m[-1].price if self.trades_1m else 0.0
-
-        # Price changes (unchanged from original)
+        
+        # Price changes
         price_change_1m = 0.0
         price_change_5m = 0.0
         price_change_1h = 0.0
-
+        
         if len(self.trades_1m) >= 2:
             price_1m_ago = self.trades_1m[0].price
             if price_1m_ago > 0:
                 price_change_1m = ((current_price - price_1m_ago) / price_1m_ago) * 100
-
+        
         if len(self.trades_5m) >= 2:
             price_5m_ago = self.trades_5m[0].price
             if price_5m_ago > 0:
                 price_change_5m = ((current_price - price_5m_ago) / price_5m_ago) * 100
-
+        
         if len(self.trades_1h) >= 2:
             price_1h_ago = self.trades_1h[0].price
             if price_1h_ago > 0:
                 price_change_1h = ((current_price - price_1h_ago) / price_1h_ago) * 100
-
-        # Buy/Sell Ratio (unchanged)
+        
+        # Buy/Sell Ratio
         bsr_1h = 1.0
         if metrics_1h['sell_volume'] > 0:
             bsr_1h = metrics_1h['buy_volume'] / metrics_1h['sell_volume']
         elif metrics_1h['buy_volume'] > 0:
             bsr_1h = 10.0
-
-        # Volume/Liquidity Ratio (unchanged)
+        
+        # Volume/Liquidity Ratio
         vlr_1h = 0.0
         if self.liquidity_usd > 0:
             vlr_1h = metrics_1h['total_volume'] / self.liquidity_usd
-
-        # NEW: Use improved VTS calculation
+        
+        # Use age-appropriate VTS calculation
         vts = self._calculate_volume_trend_score(
             metrics_5m, metrics_15m, metrics_1h, metrics_4h, metrics_24h
         )
-
-        # NEW: Use improved VEI calculation
+        
+        # VEI
         vei = self._calculate_volume_exhaustion_index(metrics_1h)
-
-        # Pressure Intensity Index (now uses corrected VTS)
+        
+        # Pressure Intensity Index
         net_pressure_1h = metrics_1h['buy_volume'] - metrics_1h['sell_volume']
         pii = 0.0
         if self.liquidity_usd > 0:
             pii = (net_pressure_1h / self.liquidity_usd) * vts
-
-        # Phase classification (using updated metrics)
+        
+        # Phase classification
         phase = self._classify_phase(vlr_1h, vts, vei, pii, price_change_1h)
-
-        # Create snapshot with all metrics
+        
+        # Create snapshot with age information
         snapshot = MetricsSnapshot(
             timestamp=current_time,
+            token_age_hours=age_hours,  # NEW: Include age context
             volume_1m=metrics_1m['total_volume'],
             volume_5m=metrics_5m['total_volume'],
             volume_15m=metrics_15m['total_volume'],
             volume_1h=metrics_1h['total_volume'],
-            volume_4h=metrics_4h['total_volume'],  # NEW
+            volume_4h=metrics_4h['total_volume'],
             volume_24h=metrics_24h['total_volume'],
             buy_volume_1m=metrics_1m['buy_volume'],
             buy_volume_5m=metrics_5m['buy_volume'],
@@ -483,43 +609,36 @@ class TokenMetricsTracker:
             liquidity_usd=self.liquidity_usd,
             total_trades_processed=self.total_trades
         )
-
-        # Store in history
+        
         self.metric_history.append(snapshot)
-
-        # Keep only last 24 hours (1440 snapshots at 1/minute)
+        
         if len(self.metric_history) > 1440:
             self.metric_history.pop(0)
-
+        
         logger.debug(
-            f"📸 Snapshot: {self.token_address[:8]} | "
+            f"📸 Snapshot: {self.token_address[:8]} (age: {age_hours:.1f}h) | "
             f"Phase={phase} VTS={vts:.2f} VEI={vei:.2f} PII={pii:.2f}"
         )
 
 
     def _classify_phase(self, vlr: float, vts: float, vei: float, 
                        pii: float, price_change: float) -> str:
-        """
-        Phase classification - unchanged logic, but now uses improved metrics.
-        
-        Because VTS and VEI are now calculated correctly, this phase
-        classification will be more accurate automatically.
-        """
+        """Phase classification - unchanged from original."""
         if vlr < 0.2 and vts < 1.2:
             return 'dormant'
-
+        
         if vts > 2.0 and vei > 0.7 and abs(price_change) > 5:
             return 'early'
-
+        
         if vts > 1.3 and vei > 0.5 and abs(pii) > 0.3:
             return 'mid'
-
+        
         if vts > 1.0 and vei < 0.5 and vei > 0.2:
             return 'late'
-
+        
         if vei < 0.3:
             return 'exhaustion'
-
+        
         return 'dormant'
 
 
@@ -529,14 +648,17 @@ class TokenMetricsTracker:
             return self.metric_history[-1]
         else:
             self._take_snapshot()
-            return self.metric_history[-1] if self.metric_history else MetricsSnapshot(timestamp=time.time())
+            return self.metric_history[-1] if self.metric_history else MetricsSnapshot(
+                timestamp=time.time(),
+                token_age_hours=self.get_token_age_hours()
+            )
 
 
     def get_historical_snapshots(self, lookback_minutes: int = 60) -> List[MetricsSnapshot]:
         """Get historical snapshots - unchanged."""
         if not self.metric_history:
             return []
-
+        
         cutoff_time = time.time() - (lookback_minutes * 60)
         return [s for s in self.metric_history if s.timestamp >= cutoff_time]
 
