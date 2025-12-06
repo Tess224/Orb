@@ -308,6 +308,16 @@ class HeliusWebSocketClient:
             data = json.loads(message)
             self.stats['messages_received'] += 1
             self.stats['last_message_time'] = datetime.now()
+
+            # NEW: Log every message we receive
+            logger.info(f"📨 WebSocket message received")
+            logger.info(f"   Message structure: {list(data.keys())}")
+        
+        # Check if this is a subscription notification (has 'params')
+        if 'params' in data:
+            logger.info(f"   ✓ Has params - this is a notification")
+            result = data['params'].get('result', {})
+            logger.info(f"   Result structure: {list(result.keys()) if result else 'None'}")
             
             # Check if this is a subscription notification (has 'params')
             if 'params' in data:
