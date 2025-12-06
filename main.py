@@ -1739,7 +1739,7 @@ def start_websocket_background():
 
 def get_raydium_pool_address(token_address: str) -> Optional[str]:
     """
-    Find the pool address for a token using Birdeye, with flexible matching.
+    Find the pool address for a token using Birdeye, with detailed debugging.
     """
     try:
         if not BIRDEYE_API_KEY:
@@ -1755,62 +1755,68 @@ def get_raydium_pool_address(token_address: str) -> Optional[str]:
         
         response = requests.get(url, params=params, headers=headers, timeout=10)
         
+        # Debug: Log the response status
+        logger.info(f"  Birdeye response status: {response.status_code}")
+        
         if response.status_code == 200:
             data = response.json()
+            
+            # Debug: Log the raw response structure
+            logger.info(f"  Response success: {data.get('success')}")
+            logger.info(f"  Response has data: {bool(data.get('data'))}")
+            
             if data.get('success') and data.get('data'):
                 markets = data['data'].get('items', [])
+                
+                logger.info(f"  Found {len(markets)} markets total")
                 
                 if not markets:
                     logger.warning(f"⚠️ No markets found for {token_address[:8]}")
                     return None
                 
-                # Log what we found for debugging
-                logger.info(f"  Found {len(markets)} markets for this token")
-                for i, m in enumerate(markets[:3]):  # Log first 3 for debugging
-                    logger.info(f"    Market {i+1}: source={m.get('source')}, liquidity=${m.get('liquidity', 0):,.0f}")
+                # Debug: Log ALL markets we found
+                for i, m in enumerate(markets):
+                    logger.info(f"    Market {i+1}:")
+                    logger.info(f"      - Source: {m.get('source')}")
+                    logger.info(f"      - Address: {m.get('address', 'N/A')[:16]}...")
+                    logger.info(f"      - Liquidity: ${m.get('liquidity', 0):,.0f}")
+                    logger.info(f"      - Type: {m.get('type', 'N/A')}")
                 
-                # Try multiple matching strategies
-                # Strategy 1: Look for Raydium specifically
-                raydium_pools = [m for m in markets if m.get('source') == 'Raydium']
-                
-                # Strategy 2: If no exact "Raydium", try case-insensitive
-                if not raydium_pools:
-                    raydium_pools = [
-                        m for m in markets 
-                        if m.get('source', '').lower().startswith('raydium')
-                    ]
-                
-                # Strategy 3: If still nothing, try looking for pump.fun pools
-                # (Many new tokens start on pump.fun which uses Raydium underneath)
-                if not raydium_pools:
-                    raydium_pools = [
-                        m for m in markets 
-                        if 'pump' in m.get('source', '').lower() or 
-                           'amm' in m.get('source', '').lower()
-                    ]
-                
-                # Strategy 4: If STILL nothing, just take the pool with highest liquidity
-                if not raydium_pools:
-                    logger.warning(f"  ⚠️ No Raydium-specific pools, using highest liquidity pool")
-                    raydium_pools = markets
-                
-                if raydium_pools:
-                    # Sort by liquidity, take the biggest one
-                    raydium_pools.sort(key=lambda x: x.get('liquidity', 0), reverse=True)
-                    pool_addr = raydium_pools[0].get('address')
+                # Try to find ANY pool - be very flexible
+                # Just take the one with the most liquidity
+                if markets:
+                    # Sort by liquidity
+                    markets.sort(key=lambda x: x.get('liquidity', 0), reverse=True)
+                    
+                    # Take the pool with highest liquidity
+                    best_pool = markets[0]
+                    pool_addr = best_pool.get('address')
                     
                     if pool_addr:
-                        source = raydium_pools[0].get('source', 'Unknown')
-                        liq = raydium_pools[0].get('liquidity', 0)
-                        logger.info(f"✅ Found pool: {pool_addr[:8]}... (source: {source}, liq: ${liq:,.0f})")
+                        source = best_pool.get('source', 'Unknown')
+                        liq = best_pool.get('liquidity', 0)
+                        logger.info(f"✅ Selected highest liquidity pool:")
+                        logger.info(f"   Address: {pool_addr[:16]}...")
+                        logger.info(f"   Source: {source}")
+                        logger.info(f"   Liquidity: ${liq:,.0f}")
                         return pool_addr
+                    else:
+                        logger.warning(f"⚠️ Market found but no address field")
+        
+        else:
+            logger.error(f"❌ Birdeye API error: Status {response.status_code}")
+            logger.error(f"   Response: {response.text[:200]}")
         
         logger.warning(f"⚠️ Could not find any pool for {token_address[:8]}")
         return None
         
     except Exception as e:
         logger.error(f"❌ Error finding pool: {e}")
+        import traceback
+        logger.error(f"   Traceback: {traceback.format_exc()}")
         return None
+        
+
 
 def start_tracking_token_realtime(token_address: str, pool_address: str, liquidity_usd: float):
     """
