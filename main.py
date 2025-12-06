@@ -1872,26 +1872,22 @@ def start_tracking_token_realtime(token_address: str, pool_address: str, liquidi
     try:
         # Add to metrics manager
         metrics_manager.add_token(token_address, liquidity_usd)
-        
+
         # Store the mapping
         token_to_pool_map[token_address] = pool_address
+
+        # Actually subscribe the WebSocket to this pool
+        subscription_success = subscribe_to_pool_from_sync(pool_address, token_address)
         
-        # Subscribe WebSocket to this pool
-        # We need to do this in an async way from our sync context
-        # For simplicity, we'll just log that we want to track it
-        # The actual subscription would need to be scheduled in the async loop
-        
+        if not subscription_success:
+            logger.warning("⚠️ WebSocket subscription failed - real-time data may not work")
+
         logger.info(f"✅ Started real-time tracking for {token_address[:8]}...")
         logger.info(f"   Pool: {pool_address[:8]}...")
         logger.info(f"   Liquidity: ${liquidity_usd:,.0f}")
 
-        # Actually subscribe the WebSocket to this pool
-subscription_success = subscribe_to_pool_from_sync(pool_address, token_address)
-
-if not subscription_success:
-    logger.warning("⚠️ WebSocket subscription failed - real-time data may not work")
         return True
-        
+
     except Exception as e:
         logger.error(f"❌ Error starting tracking: {e}")
         return False
