@@ -35,7 +35,7 @@ class HeliusWebSocketClient:
             api_key: Your Helius API key from environment variables
         """
         # Build the WebSocket URL - Helius uses wss:// for secure WebSocket
-        self.ws_url = f"wss://atlas-mainnet.helius-rpc.com?api-key={api_key}"
+        self.ws_url = f"wss://mainnet.helius-rpc.com/?api-key={api_key}"
         
         # This will hold our active WebSocket connection
         self.websocket = None
