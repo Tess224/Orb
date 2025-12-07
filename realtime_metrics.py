@@ -75,6 +75,10 @@ class MetricsSnapshot:
     pii: float = 0.0
     vts: float = 1.0
     vei: float = 1.0
+    conviction_multiplier: float = 1.0  # NEW: How strong is the volume conviction?
+    conviction_weighted_pressure: float = 0.0  # NEW: Pressure adjusted for conviction
+    size_entropy: float = 0.0  # NEW: How diverse are trade sizes?
+    large_trade_pct: float = 0.0  # NEW: Percentage of volume in large trades
     
     # Phase classification
     phase: str = 'dormant'
@@ -1302,11 +1306,24 @@ class TokenMetricsTracker:
         # VEI
         vei = self._calculate_volume_exhaustion_index(metrics_1h)
         
-        # Pressure Intensity Index
+        # Pressure Intensity Index with Conviction Weighting
         net_pressure_1h = metrics_1h['buy_volume'] - metrics_1h['sell_volume']
+
+        # Calculate conviction multiplier based on trade quality
+        conviction_multiplier = self._calculate_conviction_multiplier(metrics_1h)
+
+        # Calculate standard PII (unchanged)
         pii = 0.0
         if self.liquidity_usd > 0:
             pii = (net_pressure_1h / self.liquidity_usd) * vts
+
+        # Calculate conviction-weighted pressure
+        # This is PII adjusted for the quality of the volume
+        conviction_weighted_pressure = pii * conviction_multiplier
+
+        # Extract additional metrics for the snapshot
+        size_entropy = metrics_1h['size_entropy']
+        large_trade_pct = metrics_1h['large_pct']
         
         # Phase classification
         phase = self._classify_phase(vlr_1h, vts, vei, pii, price_change_1h)
@@ -1342,6 +1359,11 @@ class TokenMetricsTracker:
             vts_is_extreme=vts_is_extreme,  # NEW
             vts_explanation=vts_explanation,  # NEW
             vei=vei,
+            conviction_multiplier=conviction_multiplier,
+            conviction_weighted_pressure=conviction_weighted_pressure,
+            size_entropy=size_entropy,
+            large_trade_pct=large_trade_pct,
+            phase=phase,
             phase=phase,
             liquidity_usd=self.liquidity_usd,
             total_trades_processed=self.total_trades
