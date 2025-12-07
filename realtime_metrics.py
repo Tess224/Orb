@@ -569,7 +569,12 @@ class TokenMetricsTracker:
             f"(5m: ${vol_5m:.2f}, 15m avg per 5m: ${vol_15m_per_5min:.2f})"
         )
     
-        return vts
+        return {
+            'vts': vts,
+            'vts_raw': vts,
+            'is_extreme': False,
+            'explanation': 'early_stage_simplified_calculation'
+            }
 
     
     def get_token_age_hours(self) -> float:
@@ -894,9 +899,8 @@ class TokenMetricsTracker:
     # We don't have enough history for proper baseline comparisons yet
     # Use the simplified calculation instead
         if age_hours < 0.5:
-            raw_vts = self._calculate_early_stage_vts(metrics_5m, metrics_15m)
-        # Early stage gets minimal bounding since we're already being conservative
-            return min(raw_vts, 5.0)
+                # Use simplified calculation for very young tokens
+                return self._calculate_early_stage_vts(metrics_5m, metrics_15m)
     
     # NORMAL CASE: We have enough history to do proper calculations
     
