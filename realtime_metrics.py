@@ -1136,6 +1136,9 @@ class TokenMetricsTracker:
             vlr_1h=vlr_1h,
             pii=pii,
             vts=vts,
+            vts_raw=raw_vts,  # NEW
+            vts_is_extreme=vts_is_extreme,  # NEW
+            vts_explanation=vts_explanation,  # NEW
             vei=vei,
             phase=phase,
             liquidity_usd=self.liquidity_usd,
