@@ -927,7 +927,7 @@ class TokenMetricsTracker:
         elif age_hours < 6.0:
         # 1-6 hours: start incorporating 1h window
             base_weights = {'5m': 0.3, '15m': 0.4, '1h': 0.3, '4h': 0.0, '24h': 0.0}
-        elif age_hours < 24.0
+        elif age_hours < 24.0:
    # 6-24 hours: add 4h window but not 24h yet
             base_weights = {'5m': 0.15, '15m': 0.20, '1h': 0.35, '4h': 0.30, '24h': 0.0}
         else:
