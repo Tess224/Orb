@@ -687,8 +687,29 @@ class TokenMetricsTracker:
         """
         Process a new trade and update all metrics.
         
-        Now adds trades to ALL time windows, including the new short ones.
+        Now includes comprehensive validation to catch bad data before it corrupts our metrics.
         """
+    # VALIDATION FIRST - before we do anything else
+        is_valid, error = self._validate_trade_data(trade_data)
+    
+        if not is_valid:
+        # This trade has problems - reject it and log why
+            logger.warning(
+                f"⚠️ Rejected invalid trade for {self.token_address[:8]}: {error}"
+            )
+        
+        # Track statistics about rejected trades
+            self.stats['rejected_trades'] = self.stats.get('rejected_trades', 0) + 1
+        
+        # Track what types of errors we're seeing
+            if error not in self.stats['validation_errors']:
+                self.stats['validation_errors'][error] = 0
+            self.stats['validation_errors'][error] += 1
+        
+        # Don't process this trade further
+            return
+    
+    # Validation passed - proceed with your existing logic
         try:
             trade = Trade(
                 timestamp=trade_data['timestamp'],
