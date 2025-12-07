@@ -431,14 +431,9 @@ class TokenMetricsTracker:
         )
 
 
-   def _calculate_volume_trend_score(
-        self, 
-        metrics_5m: Dict, 
-        metrics_15m: Dict, 
-        metrics_1h: Dict, 
-        metrics_4h: Dict,  
-        metrics_24h: Dict
-    ) -> float:
+   def _calculate_volume_trend_score(self, metrics_5m: Dict, metrics_15m: Dict, 
+                                 metrics_1h: Dict, metrics_4h: Dict, 
+                                 metrics_24h: Dict) -> float:
         """
     Calculate Volume Trend Score using age-appropriate baselines.
     
