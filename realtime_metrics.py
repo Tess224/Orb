@@ -768,26 +768,109 @@ class TokenMetricsTracker:
 
 
     def _calculate_volume_metrics(self, trades: Deque[Trade]) -> Dict:
-        """Calculate volume metrics - unchanged from original."""
+        """
+        Calculate volume metrics with trade size distribution analysis.
+    
+        We're now tracking not just total volumes, but how those volumes are
+        distributed across different trade sizes. This helps us distinguish between
+        organic activity (many diverse trades) and artificial activity (concentrated
+        in specific size brackets).
+        """
         total_volume = 0.0
         buy_volume = 0.0
         sell_volume = 0.0
         trade_count = len(trades)
-        
+    
+    # Count trades by direction
+        buy_count = 0
+        sell_count = 0
+    
+    # Track trade size distribution
+    # We categorize trades into four buckets based on size
+        size_buckets = {
+            'micro': 0.0,    # Under $100
+            'small': 0.0,    # $100 to $1,000
+            'medium': 0.0,   # $1,000 to $10,000
+            'large': 0.0     # $10,000 and above
+        }
+    
+    # Also track count of trades in each bucket for entropy calculation
+        size_bucket_counts = {
+            'micro': 0,
+            'small': 0,
+            'medium': 0,
+            'large': 0
+        }
+
         for trade in trades:
             total_volume += trade.size_usd
+          
+        # Track buy/sell breakdown
             if trade.direction == 'buy':
                 buy_volume += trade.size_usd
+                buy_count += 1
             else:
                 sell_volume += trade.size_usd
-        
+                sell_count += 1
+            
+        # Categorize by size
+            if trade.size_usd < 100:
+                size_buckets['micro'] += trade.size_usd
+                size_bucket_counts['micro'] += 1
+            elif trade.size_usd < 1000:
+                size_buckets['small'] += trade.size_usd
+                size_bucket_counts['small'] += 1
+            elif trade.size_usd < 10000:
+                size_buckets['medium'] += trade.size_usd
+                size_bucket_counts['medium'] += 1
+            else:
+                size_buckets['large'] += trade.size_usd
+                size_bucket_counts['large'] += 1
+    
+    # Calculate percentage distribution of volume across buckets
+        size_distribution = {}
+        if total_volume > 0:
+            for bucket, volume in size_buckets.items():
+                size_distribution[f'{bucket}_pct'] = (volume / total_volume) * 100
+        else:
+        # No volume - all percentages are zero
+            for bucket in size_buckets.keys():
+                size_distribution[f'{bucket}_pct'] = 0.0
+    
+    # Calculate distribution entropy
+    # Entropy measures how evenly spread the trades are across size buckets
+    # High entropy = trades distributed across many sizes (organic)
+    # Low entropy = trades concentrated in one or two sizes (potentially artificial)
+        import math
+        entropy = 0.0
+    
+        if trade_count > 0:
+            for count in size_bucket_counts.values():
+                if count > 0:
+                    proportion = count / trade_count
+                # Shannon entropy formula
+                    entropy -= proportion * math.log2(proportion)
+    
+    # Normalize entropy to 0-1 scale
+    # Maximum entropy for 4 buckets is log2(4) = 2.0
+        max_entropy = 2.0
+        normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0.0
+
         return {
             'total_volume': total_volume,
             'buy_volume': buy_volume,
             'sell_volume': sell_volume,
-            'trade_count': trade_count
+            'trade_count': trade_count,
+            'buy_count': buy_count,
+            'sell_count': sell_count,
+        # Size distribution percentages
+            'micro_pct': size_distribution['micro_pct'],
+            'small_pct': size_distribution['small_pct'],
+            'medium_pct': size_distribution['medium_pct'],
+            'large_pct': size_distribution['large_pct'],
+        # Entropy metric
+            'size_entropy': normalized_entropy
         }
-
 
     def _get_baseline_volume(self, timeframe_seconds: int) -> float:
         """
