@@ -511,6 +511,61 @@ class TokenMetricsTracker:
     
         return capped_vts, is_extreme, explanation
 
+    def _calculate_early_stage_vts(self, metrics_5m: Dict, metrics_15m: Dict) -> float:
+        """
+        Calculate VTS for tokens we've only been tracking for a short time.
+    
+        When we've only been tracking for minutes, we can't do meaningful comparisons
+        to historical baselines that don't exist. Instead, we use a simpler approach:
+        compare very recent activity to slightly less recent activity.
+    
+        It's like judging if a party is getting more crowded by comparing how many people
+        arrived in the last 5 minutes versus the rate people were arriving earlier.
+    
+        Args:
+            metrics_5m: Volume metrics for the last 5 minutes
+            metrics_15m: Volume metrics for the last 15 minutes
+        
+        Returns:
+            A simplified VTS score between 0.5 and 5.0
+        """
+        vol_5m = metrics_5m['total_volume']
+        vol_15m = metrics_15m['total_volume']
+    
+    # Do we have any data at all?
+        if len(self.trades_15m) < 2:
+        # Almost no data - return neutral score
+            return 1.0
+    
+    # Calculate the average 5-minute volume from the 15-minute window
+    # If volume is steady, this should equal the most recent 5 minutes
+    # If volume is accelerating, the recent 5 minutes will be higher
+        vol_15m_per_5min = vol_15m / 3.0
+    
+    # Avoid division by zero
+        if vol_15m_per_5min < 0.1:
+        # Very low volume overall - use a small baseline
+            vol_15m_per_5min = 0.1
+    
+    # Calculate the ratio
+        vts = vol_5m / vol_15m_per_5min
+    
+    # For early stage, cap at 5.0
+    # We don't have enough data to confidently say something is higher than that
+        vts = min(vts, 5.0)
+    
+    # Also apply a floor of 0.5
+    # VTS below 0.5 suggests volume is declining, but for very young tokens
+    # we don't have enough context to be confident about that
+        vts = max(vts, 0.5)
+    
+        logger.debug(
+            f"Early-stage VTS for {self.token_address[:8]}: {vts:.2f} "
+            f"(5m: ${vol_5m:.2f}, 15m avg per 5m: ${vol_15m_per_5min:.2f})"
+        )
+    
+        return vts
+
     
     def get_token_age_hours(self) -> float:
         """
