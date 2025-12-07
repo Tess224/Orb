@@ -849,82 +849,132 @@ class TokenMetricsTracker:
     def _calculate_volume_trend_score(self, metrics_5m: Dict, metrics_15m: Dict, 
                                  metrics_1h: Dict, metrics_4h: Dict, 
                                  metrics_24h: Dict) -> float:
+        
         """
-        Calculate Volume Trend Score using age-appropriate baselines.
-       
-        CRITICAL FIX: For very young tokens, we can't compare to baselines that
-        don't exist yet. Instead, we need to use a different calculation method
-        that looks at volume acceleration and absolute volume levels.
+        Calculate Volume Trend Score with proper baseline handling and confidence weighting.
+    
+        This is the master method that brings together all our fixes:
+        - Smart baseline floors that adapt to token behavior
+        - Confidence-based weighting that respects data quality
+        - Individual ratio caps to prevent any one window from dominating
+        - Final score bounding to catch edge cases
+    
+        The result is a VTS that stays in interpretable ranges (typically 0.5 to 15.0)
+        while still detecting genuine unusual activity.
         """
         age_hours = self.get_token_age_hours()
     
-        # For tokens under 30 minutes old, use a simpler absolute volume approach
+    # SPECIAL CASE: Very young tokens (under 30 minutes)
+    # We don't have enough history for proper baseline comparisons yet
+    # Use the simplified calculation instead
         if age_hours < 0.5:
-        # Can't do meaningful baseline comparisons yet
-        # Instead, look at whether volume is accelerating
-            vol_5m = metrics_5m['total_volume']
-        
-        # Compare 5-minute window to the 15-minute average
-            if len(self.trades_15m) > 0:
-                vol_15m_avg = metrics_15m['total_volume'] / 3.0  # Average per 5 minutes
-                if vol_15m_avg > 0:
-                    vts = vol_5m / vol_15m_avg
-                else:
-                    vts = 1.0
-            else:
-            # Very first minutes, just return neutral
-                vts = 1.0
-        
-        # Cap at reasonable maximum for young tokens
-            vts = min(vts, 5.0)
-        
-            logger.debug(
-                f"🐣 VTS for young token {self.token_address[:8]}: {vts:.2f} "
-                f"(age: {age_hours:.2f}h, using simplified calculation)"
-            )
-        
-            return vts
+            raw_vts = self._calculate_early_stage_vts(metrics_5m, metrics_15m)
+        # Early stage gets minimal bounding since we're already being conservative
+            return min(raw_vts, 5.0)
     
-    # For tokens 30+ minutes old, we can start using baseline comparisons
-        self._update_baselines()
+    # NORMAL CASE: We have enough history to do proper calculations
     
-    # Get age-appropriate baselines with safety checks
-        baseline_5m = max(self._get_baseline_volume(300), 0.1)  # Minimum baseline of $0.10
-        baseline_15m = max(self._get_baseline_volume(900), 0.1)
-        baseline_1h = max(self._get_baseline_volume(3600), 0.1)
-        baseline_4h = max(self._get_baseline_volume(14400), 0.1)
-        baseline_24h = max(self._get_baseline_volume(86400), 0.1)
+    # Get baselines with confidence scores for each timeframe
+    # Each of these returns (confidence, baseline_value, status_message)
+        conf_5m, base_5m, status_5m = self._get_baseline_confidence_and_value(300)
+        conf_15m, base_15m, status_15m = self._get_baseline_confidence_and_value(900)
+        conf_1h, base_1h, status_1h = self._get_baseline_confidence_and_value(3600)
+        conf_4h, base_4h, status_4h = self._get_baseline_confidence_and_value(14400)
+        conf_24h, base_24h, status_24h = self._get_baseline_confidence_and_value(86400)
     
-    # Calculate ratios with safety caps
-        ratio_5m = min(metrics_5m['total_volume'] / baseline_5m, 1000.0)  # Cap at 1000x
-        ratio_15m = min(metrics_15m['total_volume'] / baseline_15m, 1000.0)
-        ratio_1h = min(metrics_1h['total_volume'] / baseline_1h, 1000.0)
-        ratio_4h = min(metrics_4h['total_volume'] / baseline_4h, 1000.0)
-        ratio_24h = min(metrics_24h['total_volume'] / baseline_24h, 1000.0)
-
-    # Age-based weighting (same as before)
+    # Calculate raw ratios with individual caps
+    # We cap each ratio at 100x to prevent any single window from creating absurd values
+    # A 100x spike in volume is already extremely unusual - anything beyond that
+    # is more likely data corruption than reality
+        ratio_5m = min(metrics_5m['total_volume'] / base_5m, 100.0)
+        ratio_15m = min(metrics_15m['total_volume'] / base_15m, 100.0)
+        ratio_1h = min(metrics_1h['total_volume'] / base_1h, 100.0)
+        ratio_4h = min(metrics_4h['total_volume'] / base_4h, 100.0)
+        ratio_24h = min(metrics_24h['total_volume'] / base_24h, 100.0)
+    
+    # Determine base weights based on token age
+    # Younger tokens rely more on shorter windows because that's all we can trust
+    # Mature tokens use a balanced mix of all timeframes
         if age_hours < 1.0:
-            vts = (ratio_5m * 0.7) + (ratio_15m * 0.3)
+        # Under 1 hour: focus heavily on 5m and 15m windows
+            base_weights = {'5m': 0.7, '15m': 0.3, '1h': 0.0, '4h': 0.0, '24h': 0.0}
         elif age_hours < 6.0:
-            vts = (ratio_5m * 0.3) + (ratio_15m * 0.4) + (ratio_1h * 0.3)
-        elif age_hours < 24.0:
-            vts = (ratio_5m * 0.15) + (ratio_15m * 0.20) + (ratio_1h * 0.35) + (ratio_4h * 0.30)
+        # 1-6 hours: start incorporating 1h window
+            base_weights = {'5m': 0.3, '15m': 0.4, '1h': 0.3, '4h': 0.0, '24h': 0.0}
+        elif age_hours < 24.0
+   # 6-24 hours: add 4h window but not 24h yet
+            base_weights = {'5m': 0.15, '15m': 0.20, '1h': 0.35, '4h': 0.30, '24h': 0.0}
         else:
-            vts = (
-                (ratio_5m * 0.10) +
-                (ratio_15m * 0.15) +
-                (ratio_1h * 0.25) +
-                (ratio_4h * 0.25) +
-                (ratio_24h * 0.25)
-            )
-
-        if vts > 3.0:
+        # Mature token: use all windows
+            base_weights = {'5m': 0.10, '15m': 0.15, '1h': 0.25, '4h': 0.25, '24h': 0.25}
+    
+    # Now adjust these base weights by confidence scores
+    # If a window's baseline is unreliable, we reduce its contribution
+    # This prevents low-confidence baselines from distorting the score
+    
+        confidence_map = {
+            '5m': conf_5m,
+            '15m': conf_15m,
+            '1h': conf_1h,
+            '4h': conf_4h,
+            '24h': conf_24h
+        }
+    
+    # Multiply each base weight by its confidence
+        adjusted_weights = {}
+        total_conf_weighted = 0.0
+     
+        for window, base_weight in base_weights.items():
+            conf = confidence_map[window]
+        # Confidence-adjusted weight
+            adjusted_weights[window] = base_weight * conf
+            total_conf_weighted += adjusted_weights[window]
+    
+    # Normalize weights so they sum to 1.0
+    # This is important - we're redistributing the weight from low-confidence
+    # windows to high-confidence windows
+        if total_conf_weighted > 0:
+            for window in adjusted_weights:
+                adjusted_weights[window] /= total_conf_weighted
+        else:
+        # Edge case: all confidences are zero (shouldn't happen, but handle it)
+        # Fall back to equal weighting of available windows
+            adjusted_weights = base_weights
+    
+    # Calculate the weighted VTS
+        raw_vts = (
+            (ratio_5m * adjusted_weights['5m']) +
+            (ratio_15m * adjusted_weights['15m']) +
+            (ratio_1h * adjusted_weights['1h']) +
+            (ratio_4h * adjusted_weights['4h']) +
+            (ratio_24h * adjusted_weights['24h'])
+        )
+    
+    # Apply intelligent bounding
+    # This is our final safety check that prevents absurd values
+        bounded_vts, is_extreme, explanation = self._apply_vts_bounds(raw_vts)
+    
+    # Log if we see anything interesting
+        if bounded_vts > 3.0 or is_extreme:
             logger.info(
-                f"🔥 High VTS detected on {self.token_address[:8]}: {vts:.2f} "
-                f"(age: {age_hours:.1f}h, baselines: 5m=${baseline_5m:.2f}, 15m=${baseline_15m:.2f})"
+                f"🔥 VTS for {self.token_address[:8]}: {bounded_vts:.2f} "
+                f"(raw: {raw_vts:.2f}, age: {age_hours:.1f}h) - {explanation}"
             )
-
-        return vts
+            logger.debug(
+                f"   Ratios: 5m={ratio_5m:.1f}, 15m={ratio_15m:.1f}, "
+                f"1h={ratio_1h:.1f}, 4h={ratio_4h:.1f}, 24h={ratio_24h:.1f}"
+            )
+            logger.debug(
+                f"   Confidences: 5m={conf_5m:.2f}, 15m={conf_15m:.2f}, "
+                f"1h={conf_1h:.2f}, 4h={conf_4h:.2f}, 24h={conf_24h:.2f}"
+            )
+            logger.debug(
+                f"   Final weights: 5m={adjusted_weights['5m']:.2f}, "
+                f"15m={adjusted_weights['15m']:.2f}, 1h={adjusted_weights['1h']:.2f}, "
+                f"4h={adjusted_weights['4h']:.2f}, 24h={adjusted_weights['24h']:.2f}"
+            )
+    
+        return bounded_vts
 
 
     def _calculate_volume_exhaustion_index(self, metrics_1h: Dict) -> float:
