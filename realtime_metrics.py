@@ -78,6 +78,11 @@ class MetricsSnapshot:
     
     # Phase classification
     phase: str = 'dormant'
+
+    # NEW FIELDS - add these at the end, before the metadata section
+    vts_raw: float = 0.0  # The raw VTS before bounding
+    vts_is_extreme: bool = False  # Flag if VTS suggests data problems
+    vts_explanation: str = "normal"  # Human-readable explanation
     
     # Metadata
     liquidity_usd: float = 0.0
