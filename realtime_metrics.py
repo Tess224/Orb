@@ -1364,7 +1364,6 @@ class TokenMetricsTracker:
             size_entropy=size_entropy,
             large_trade_pct=large_trade_pct,
             phase=phase,
-            phase=phase,
             liquidity_usd=self.liquidity_usd,
             total_trades_processed=self.total_trades
         )
