@@ -1084,27 +1084,18 @@ class TokenMetricsTracker:
         if self.liquidity_usd > 0:
             vlr_1h = metrics_1h['total_volume'] / self.liquidity_usd
         
-        # NEW CODE - replace with this:
-        raw_vts = self._calculate_volume_trend_score(
+        # Calculate VTS using our comprehensive method
+        # This returns a dictionary with vts, vts_raw, is_extreme, and explanation
+        vts_result = self._calculate_volume_trend_score(
             metrics_5m, metrics_15m, metrics_1h, metrics_4h, metrics_24h
         )
-
-# Note: the VTS calculation now handles its own bounding internally
-# But we still store both raw and bounded versions for analysis
-        vts = raw_vts  # This is already bounded by _calculate_volume_trend_score
-
-# Extract the explanation if it was flagged as extreme
-# We can check our VTS history to see if this was just added
-        vts_is_extreme = False
-        vts_explanation = "normal"
-        if len(self.vts_history) > 0:
-    # The _calculate_volume_trend_score already added this to history
-    # and applied bounding, so we just need to check if it was capped
-            if raw_vts > 15.0:
-                vts_is_extreme = True
-                vts_explanation = f"High VTS: {raw_vts:.1f}"
-        
-        
+    
+        # Extract the components
+        vts = vts_result['vts']
+        vts_raw = vts_result['vts_raw']
+        vts_is_extreme = vts_result['is_extreme']
+        vts_explanation = vts_result['explanation']
+            
         # VEI
         vei = self._calculate_volume_exhaustion_index(metrics_1h)
         
