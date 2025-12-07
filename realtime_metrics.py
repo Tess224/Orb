@@ -224,6 +224,89 @@ class TokenMetricsTracker:
     # All checks passed
         return True, None
 
+    def _calculate_safe_baseline_floor(self, window_name: str) -> float:
+        """
+        Calculate a sensible minimum baseline value based on the token's actual behavior.
+    
+        The problem we're solving: we can't use an arbitrary tiny number like $0.10
+        because that might be absurdly small for a token trading thousands of dollars,
+        or it might be too large for a truly tiny microcap.
+       
+        Our solution: look at what the token actually trades and base our floor on that.
+      
+        Think of it like setting a noise threshold on a microphone. You want it low enough
+        to hear real sound, but high enough to filter out electrical hum. The right level
+        depends on your specific environment.
+    
+        Args:
+            window_name: Which timeframe we're calculating for ('5m', '15m', '1h', etc.)
+        
+        Returns:
+            A dollar amount to use as the minimum baseline
+        """
+        age_hours = self.get_token_age_hours()
+    
+    # For very young tokens, we need to be extra careful
+    # We'll look at what we've actually observed and use that to set a floor
+        if age_hours < 1.0:
+        # Do we have any trading history at all?
+            if len(self.trades_30m) > 0:
+            # Break our 30 minutes of trades into 5-minute chunks
+            # Calculate volume for each chunk
+                volumes_5m = []
+                trades_list = list(self.trades_30m)
+            
+            # We want about 6 chunks (30 minutes / 5 minutes)
+                chunk_size = max(1, len(trades_list) // 6)
+            
+                for i in range(0, len(trades_list), chunk_size):
+                    chunk = trades_list[i:i + chunk_size]
+                    chunk_volume = sum(t.size_usd for t in chunk)
+                    volumes_5m.append(chunk_volume)
+            
+                if volumes_5m:
+                # Use the 20th percentile as our floor
+                # This means 80% of periods had more volume than this
+                # It's conservative but not absurdly low
+                    volumes_5m.sort()
+                    idx_20th = max(0, len(volumes_5m) // 5)
+                    percentile_20 = volumes_5m[idx_20th]
+                
+                # Also calculate a liquidity-based minimum
+                # Even quiet periods should have some volume relative to liquidity
+                # We use 0.01% of liquidity as an absolute floor
+                    liquidity_based_min = self.liquidity_usd * 0.0001
+                
+                # Use whichever is larger, but at least $1
+                    return max(percentile_20, liquidity_based_min, 1.0)
+        
+        # If we have no trading history yet, use a liquidity-based estimate
+        # This is our best guess before we've seen any real trading
+            return max(self.liquidity_usd * 0.0001, 1.0)
+    
+    # For more mature tokens, we can use the actual historical baselines
+    # but we still want to ensure they're not unreasonably small
+    
+    # Get the appropriate historical baseline for this window
+        if window_name == '5m':
+            historical = self.baseline_volume_5m
+        elif window_name == '15m':
+            historical = self.baseline_volume_15m
+        elif window_name == '1h':
+            historical = self.baseline_volume_1h
+        elif window_name == '4h':
+            historical = self.baseline_volume_4h
+        else:  # '24h'
+            historical = self.baseline_volume_24h
+    
+    # If we have a good historical baseline, use 10% of it as the floor
+    # This handles naturally quiet periods without treating them as anomalies
+        if historical > 0:
+            return historical * 0.10
+    
+    # If we somehow don't have a historical baseline yet, fall back to liquidity estimate
+        return max(self.liquidity_usd * 0.0001, 1.0)
+
     
     def get_token_age_hours(self) -> float:
         """
