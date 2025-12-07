@@ -9,6 +9,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
