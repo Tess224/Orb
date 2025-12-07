@@ -977,7 +977,6 @@ class TokenMetricsTracker:
         )
     
     # Apply intelligent bounding
-    # This is our final safety check that prevents absurd values
         bounded_vts, is_extreme, explanation = self._apply_vts_bounds(raw_vts)
     
     # Log if we see anything interesting
@@ -1000,9 +999,14 @@ class TokenMetricsTracker:
                 f"4h={adjusted_weights['4h']:.2f}, 24h={adjusted_weights['24h']:.2f}"
             )
     
-        return bounded_vts
-
-
+    # Return a dictionary with all the information about this VTS calculation
+        return {
+            'vts': bounded_vts,
+            'vts_raw': raw_vts,
+            'is_extreme': is_extreme,
+            'explanation': explanation
+        }
+                    
     def _calculate_volume_exhaustion_index(self, metrics_1h: Dict) -> float:
         """Calculate Volume Exhaustion Index - unchanged from original."""
         current_hour_volume = metrics_1h['total_volume']
