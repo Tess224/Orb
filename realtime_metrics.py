@@ -872,6 +872,126 @@ class TokenMetricsTracker:
             'size_entropy': normalized_entropy
         }
 
+    def _calculate_conviction_multiplier(self, metrics: Dict) -> float:
+        """
+        Calculate how much to amplify or dampen pressure based on trade conviction.
+    
+        This is where we distinguish between strong, organic volume and weak,
+        potentially artificial volume. We look at two main factors:
+    
+        1. Volume-Count Alignment: Do volume and trade count tell the same story?
+        2. Size Distribution: Are trades diverse or concentrated?
+    
+        The multiplier ranges from 0.5 (weak conviction) to 2.0 (strong conviction),
+        with 1.0 being neutral.
+    
+        Args:
+            metrics: The output from _calculate_volume_metrics containing all our data
+        
+        Returns:
+            A multiplier to apply to pressure calculations
+        """
+    # Start with neutral multiplier
+        conviction = 1.0
+    
+    # FACTOR ONE: Volume-Count Alignment
+    # Calculate imbalance ratios for both volume and trade count
+    
+        buy_volume = metrics['buy_volume']
+        sell_volume = metrics['sell_volume']
+        buy_count = metrics['buy_count']
+        sell_count = metrics['sell_count']
+    
+    # Volume imbalance ratio (-1 to +1)
+    # Positive means more buying, negative means more selling
+        total_volume = buy_volume + sell_volume
+        if total_volume > 0:
+            volume_imbalance = (buy_volume - sell_volume) / total_volume
+        else:
+            volume_imbalance = 0.0
+    
+    # Count imbalance ratio (-1 to +1)
+        total_count = buy_count + sell_count
+        if total_count > 0:
+            count_imbalance = (buy_count - sell_count) / total_count
+        else:
+            count_imbalance = 0.0
+    
+    # When volume and count imbalances align strongly in the same direction,
+    # that indicates genuine conviction. We multiply them together.
+    # If both are strongly positive or both strongly negative, the product
+    # will be large and positive. If they disagree, the product will be small.
+        alignment_score = abs(volume_imbalance * count_imbalance)
+    
+    # Scale alignment into a multiplier component (0.5 to 1.5)
+    # Strong alignment adds up to +0.5, weak alignment subtracts up to -0.5
+        alignment_multiplier = 1.0 + (alignment_score * 0.5)
+    
+        logger.debug(
+            f"Conviction alignment for {self.token_address[:8]}: "
+            f"vol_imbalance={volume_imbalance:.2f}, count_imbalance={count_imbalance:.2f}, "
+            f"alignment_score={alignment_score:.2f}, multiplier={alignment_multiplier:.2f}"
+        )
+    
+    # FACTOR TWO: Size Distribution Quality
+    # Use the entropy metric we calculated
+    
+        size_entropy = metrics['size_entropy']
+    
+    # High entropy (close to 1.0) suggests organic, diverse trading
+    # Low entropy (close to 0.0) suggests concentrated, potentially artificial trading
+    
+    # We also want to penalize situations where large trades dominate
+    # A healthy market has a mix, but too much concentration in large trades is suspicious
+        large_pct = metrics['large_pct']
+    
+    # Calculate a distribution quality score
+        if size_entropy > 0.7:
+        # High entropy - trades are well distributed
+        # This is good, adds a bonus
+            distribution_multiplier = 1.0 + (size_entropy * 0.3)
+        elif size_entropy < 0.3:
+        # Very low entropy - trades are heavily concentrated
+        # This is suspicious, apply a penalty
+            distribution_multiplier = 0.7 + (size_entropy * 0.3)
+        else:
+        # Medium entropy - neutral
+            distribution_multiplier = 1.0
+    
+    # Additional check: if large trades are more than 60% of volume, that's suspicious
+        if large_pct > 60:
+        # The more concentrated in large trades, the bigger the penalty
+            concentration_penalty = 1.0 - ((large_pct - 60) / 100)
+            distribution_multiplier *= concentration_penalty
+        
+            logger.debug(
+                f"Large trade concentration detected: {large_pct:.1f}% in large trades, "
+                f"applying penalty multiplier of {concentration_penalty:.2f}"
+            )
+    
+        logger.debug(
+            f"Distribution quality for {self.token_address[:8]}: "
+            f"entropy={size_entropy:.2f}, large_pct={large_pct:.1f}%, "
+            f"multiplier={distribution_multiplier:.2f}"
+       )
+    
+    # COMBINE THE FACTORS
+    # Multiply alignment and distribution components together
+        conviction = alignment_multiplier * distribution_multiplier
+    
+    # Apply final bounds to prevent extreme values
+    # We allow conviction to range from 0.5 (very weak) to 2.0 (very strong)
+        conviction = max(0.5, min(2.0, conviction))
+    
+        if conviction > 1.3 or conviction < 0.7:
+            logger.info(
+                f"🎯 Notable conviction score for {self.token_address[:8]}: {conviction:.2f} "
+                f"(alignment={alignment_multiplier:.2f}, distribution={distribution_multiplier:.2f})"
+            )
+    
+        return conviction
+    
+
     def _get_baseline_volume(self, timeframe_seconds: int) -> float:
         """
         Get the appropriate baseline volume for a given timeframe.
