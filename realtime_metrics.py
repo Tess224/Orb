@@ -307,6 +307,89 @@ class TokenMetricsTracker:
     # If we somehow don't have a historical baseline yet, fall back to liquidity estimate
         return max(self.liquidity_usd * 0.0001, 1.0)
 
+
+    def _get_baseline_confidence_and_value(self, timeframe_seconds: int) -> Tuple[float, float, str]:
+        """
+        Get a baseline value AND tell us how confident we should be in it.
+    
+        The key insight: a baseline calculated from 2 observations is not as reliable
+        as one calculated from 100 observations. We need to know the difference.
+    
+        Think of it like weather forecasting. A forecast based on 50 years of data
+        for this date is more reliable than one based on just last year's weather.
+    
+        Args:
+            timeframe_seconds: The window size we want a baseline for (300 for 5min, etc.)
+        
+        Returns:
+            A tuple of (confidence, baseline_value, status_message)
+            - confidence: 0.0 to 1.0, where 1.0 means fully reliable
+            - baseline_value: the actual baseline to use in calculations
+            - status_message: human-readable explanation
+        """
+        age_hours = self.get_token_age_hours()
+        timeframe_hours = timeframe_seconds / 3600.0
+    
+    # How many complete windows of this timeframe do we need to trust the baseline?
+    # These numbers are based on statistical principles - you need multiple observations
+    # to establish a reliable average
+        min_windows_needed = {
+            300: 6,      # 5-minute windows: need 30 minutes (6 complete windows)
+            900: 4,      # 15-minute windows: need 1 hour (4 complete windows)
+            3600: 4,     # 1-hour windows: need 4 hours (4 complete windows)
+            14400: 3,    # 4-hour windows: need 12 hours (3 complete windows)
+            86400: 7     # 24-hour windows: need 7 days (7 complete windows)
+        }
+    
+        min_windows = min_windows_needed.get(timeframe_seconds, 4)
+    
+    # How many windows do we actually have?
+        windows_available = age_hours / timeframe_hours
+    
+    # Calculate confidence based on how many windows we've observed
+        if windows_available < 1:
+        # We don't even have one complete window yet
+            confidence = 0.0
+            status = "insufficient_data"
+        
+        elif windows_available < min_windows:
+        # We have some windows, but not enough for full confidence
+        # Confidence scales linearly from 0 to 1 as we collect more windows
+        # For example, if we need 6 windows and have 3, confidence is 0.5
+            confidence = windows_available / min_windows
+            status = "building_baseline"
+        
+        else:
+        # We have enough windows - full confidence
+            confidence = 1.0
+            status = "baseline_reliable"
+    
+    # Get the actual baseline value using our existing method
+        baseline = self._get_baseline_volume(timeframe_seconds)
+    
+    # Apply our smart floor calculation to prevent tiny denominators
+        window_name_map = {
+            300: '5m',
+            900: '15m', 
+            3600: '1h',
+            14400: '4h',
+            86400: '24h'
+        }
+        window_name = window_name_map.get(timeframe_seconds, '1h')
+        safe_floor = self._calculate_safe_baseline_floor(window_name)
+    
+    # Use whichever is larger - the calculated baseline or our safety floor
+        baseline = max(baseline, safe_floor)
+    
+    # Log this so we can see what's happening during debugging
+        logger.debug(
+            f"Baseline for {timeframe_seconds}s window: ${baseline:.2f}, "
+            f"confidence: {confidence:.2f} ({status}), "
+            f"windows: {windows_available:.1f} of {min_windows} needed"
+        )
+    
+        return confidence, baseline, status
+
     
     def get_token_age_hours(self) -> float:
         """
