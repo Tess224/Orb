@@ -148,10 +148,83 @@ class TokenMetricsTracker:
         
         # Statistics
         self.total_trades = 0
-        
+        # NEW ADDITIONS START HERE
+    # Track VTS history for intelligent capping
+    # We keep up to 4320 values (3 days of minute-by-minute snapshots)
+        self.vts_history: Deque[float] = deque(maxlen=4320)
+    
+    # Cache for VTS percentile calculations
+    # We don't want to recalculate percentiles every minute because it's slow
+    # This cache stores the 99th percentile and when we last calculated it
+        self.vts_percentiles_cache = {
+            '99th': 15.0,  # Start with a conservative default
+            'last_update': 0  # Will be updated when we first calculate
+        }
+    
+    # Track data quality statistics
+    # These help us monitor if we're getting bad data from the WebSocket
+        self.stats = {
+            'rejected_trades': 0,
+            'validation_errors': {}
+        }
+    # NEW ADDITIONS END HERE
+
         logger.info(f"📊 Initialized dynamic-timeframe tracker for {token_address[:8]}... (Liq: ${liquidity_usd:,.0f})")
 
 
+    def _validate_trade_data(self, trade_data: Dict) -> Tuple[bool, Optional[str]]:
+        """
+        Check if incoming trade data is valid and makes sense.
+    
+        This is our first line of defense against bad data. We check:
+        1. All required fields are present
+        2. Values are within reasonable ranges
+        3. The timestamp makes sense
+    
+        Think of this like a bouncer at a club - we check IDs before letting anyone in.
+    
+        Returns:
+            A tuple of (is_valid, error_message)
+            If valid, error_message will be None
+            If invalid, error_message explains what's wrong
+        """
+    # First check: do we have all the fields we need?
+        required_fields = ['timestamp', 'direction', 'size_usd', 'price']
+        for field in required_fields:
+            if field not in trade_data:
+                return False, f"missing_field_{field}"
+    
+    # Second check: is the trade size reasonable?
+    # Negative sizes don't make sense
+        if trade_data['size_usd'] < 0:
+            return False, "negative_size"
+    
+    # A trade that's 10x the entire liquidity pool is probably an error
+    # Real trades would be limited by available liquidity
+        if trade_data['size_usd'] > self.liquidity_usd * 10:
+            return False, f"size_exceeds_10x_liquidity (${trade_data['size_usd']:.0f} > ${self.liquidity_usd * 10:.0f})"
+    
+    # Third check: is the price valid?
+        if trade_data['price'] <= 0:
+            return False, "invalid_price"
+    
+    # Fourth check: is the timestamp reasonable?
+        current_time = time.time()
+        trade_time = trade_data['timestamp']
+    
+    # Trade can't be from the future (with 60 second tolerance for clock differences)
+        if trade_time > current_time + 60:
+            return False, "timestamp_in_future"
+    
+    # Trade can't be from more than 24 hours ago
+    # If we're just starting to track, we shouldn't get ancient trades
+        if trade_time < current_time - 86400:
+            return False, "timestamp_too_old"
+    
+    # All checks passed
+        return True, None
+
+    
     def get_token_age_hours(self) -> float:
         """
         Calculate how many hours we've been tracking this token.
