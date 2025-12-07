@@ -444,6 +444,73 @@ class TokenMetricsTracker:
     # Mark that we've updated
         self.vts_percentiles_cache['last_update'] = current_time
 
+
+    def _apply_vts_bounds(self, raw_vts: float) -> Tuple[float, bool, str]:
+        """
+        Take a raw VTS score and apply intelligent limits to prevent absurd values.
+    
+        This is our final safety net. Even if everything else goes wrong and we calculate
+        a VTS of 10,000, this method will catch it and apply reasonable bounds.
+    
+        We do three things here:
+        1. Cap the VTS at our dynamic maximum (based on historical behavior)
+        2. Detect if the score is so extreme it suggests a data problem
+        3. Record the raw value for our historical analysis
+    
+        Think of this like a circuit breaker in your home's electrical panel. Normal current
+        flows through fine, but if there's a dangerous surge, the breaker trips to prevent
+        damage. We're doing the same for VTS scores.
+    
+        Args:
+            raw_vts: The VTS value we calculated from the formulas
+          
+        Returns:
+            A tuple of (bounded_vts, is_extreme, explanation)
+            - bounded_vts: The safe value to actually use
+            - is_extreme: True if this looks like a data anomaly
+            - explanation: Human-readable description of what happened
+        """
+    # First, make sure our percentile cache is up to date
+        self._update_vts_percentiles()
+    
+    # Get our dynamic cap based on historical behavior
+        dynamic_cap = self.vts_percentiles_cache['99th']
+    
+    # Apply the cap to get our bounded value
+    # This is what we'll actually use in downstream calculations
+        capped_vts = min(raw_vts, dynamic_cap)
+    
+    # Is this score so extreme it suggests something is broken?
+    # If the raw score is 5x our cap, that's almost certainly a bug, not real activity
+    # For example, if the cap is 15, a raw VTS of 75 is suspicious
+        is_extreme = (raw_vts / dynamic_cap) >= 5.0
+    
+    # Build a human-readable explanation of what we did
+        if is_extreme:
+            explanation = (
+                f"EXTREME_ANOMALY: raw VTS of {raw_vts:.1f} is "
+                f"{raw_vts/dynamic_cap:.1f}x the dynamic cap of {dynamic_cap:.1f}. "
+                f"This likely indicates a data quality issue."
+            )
+            logger.warning(f"⚠️ {explanation} for {self.token_address[:8]}")
+        
+        elif raw_vts > dynamic_cap:
+            explanation = (
+                f"CAPPED: raw VTS of {raw_vts:.1f} exceeded dynamic cap of {dynamic_cap:.1f}"
+            )
+            logger.info(f"📊 {explanation} for {self.token_address[:8]}")
+        
+        else:
+        # Normal case - no capping needed
+            explanation = "normal"
+    
+    # Add the raw value to our history
+    # This is important - we track the raw values, not the capped ones
+    # This way our percentile calculations reflect actual behavior
+        self.vts_history.append(raw_vts)
+    
+        return capped_vts, is_extreme, explanation
+
     
     def get_token_age_hours(self) -> float:
         """
