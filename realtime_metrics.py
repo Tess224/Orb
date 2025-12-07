@@ -390,6 +390,60 @@ class TokenMetricsTracker:
     
         return confidence, baseline, status
 
+
+    def _update_vts_percentiles(self):
+        """
+        Calculate what VTS scores have historically looked like for this token.
+    
+        We're building a statistical profile that says "for this token, 99% of the time,
+        VTS has been below X." This lets us know when we're seeing something truly unusual
+        versus just normal variation.
+    
+        Think of it like tracking your daily step count. After a few months, you know that
+        99% of days you walk between 3,000 and 8,000 steps. If you suddenly walk 25,000 steps,
+        you know that's genuinely unusual, not just a bit more than average.
+    
+        We cache this calculation because computing percentiles is slow. We only recalculate
+        once per hour, which is plenty frequent for this purpose.
+        """
+        current_time = time.time()
+    
+    # Have we updated recently? If so, skip the expensive calculation
+        if current_time - self.vts_percentiles_cache['last_update'] < 3600:
+            return
+    
+    # Do we have enough history to calculate meaningful percentiles?
+    # We need at least 100 data points for percentiles to be meaningful
+        if len(self.vts_history) < 100:
+        # Not enough history yet - stick with conservative default
+            self.vts_percentiles_cache['99th'] = 15.0
+            logger.debug(
+                f"VTS percentiles: using default (only {len(self.vts_history)} samples)"
+            )
+        else:
+        # We have enough history - calculate the actual 99th percentile
+            sorted_vts = sorted(self.vts_history)
+        
+        # The 99th percentile means 99% of values are below this point
+            idx_99 = int(len(sorted_vts) * 0.99)
+            p99 = sorted_vts[idx_99]
+        
+        # Our dynamic cap is the larger of:
+        # - A fixed minimum of 15 (reasonable max for normal activity)
+        # - 120% of the 99th percentile (allows some headroom above typical spikes)
+            dynamic_cap = max(15.0, p99 * 1.2)
+        
+            self.vts_percentiles_cache['99th'] = dynamic_cap
+        
+            logger.debug(
+                f"VTS percentiles updated for {self.token_address[:8]}: "
+                f"99th percentile = {p99:.2f}, dynamic cap = {dynamic_cap:.2f} "
+                f"(based on {len(self.vts_history)} samples)"
+            )
+    
+    # Mark that we've updated
+        self.vts_percentiles_cache['last_update'] = current_time
+
     
     def get_token_age_hours(self) -> float:
         """
