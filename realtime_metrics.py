@@ -1467,23 +1467,32 @@ class MetricsManager:
     def handle_trade(self, trade_data: Dict):
         """
         Route incoming trade data to the appropriate tracker.
-        
-        This is the callback function that gets registered with the
-        WebSocket client.
-        
-        Args:
-            trade_data: Trade information from WebSocket
+    
+        Enhanced with detailed error logging to catch any issues from our
+        new conviction-weighted pressure calculations.
         """
-        token_address = trade_data.get('token_address')
-        
-        if not token_address:
-            logger.warning("⚠️ Trade data missing token_address")
-            return
-        
-        if token_address in self.trackers:
-            self.trackers[token_address].add_trade(trade_data)
-        else:
-            logger.debug(f"ℹ️ Received trade for untracked token {token_address[:8]}...")
+        try:
+            token_address = trade_data.get('token_address')
+
+            if not token_address:
+                logger.warning("⚠️ Trade data missing token_address")
+                return
+
+            if token_address in self.trackers:
+                try:
+                    self.trackers[token_address].add_trade(trade_data)
+                except Exception as trade_error:
+                    logger.error(f"❌ Error processing trade for {token_address[:8]}: {trade_error}")
+                    import traceback
+                    logger.error(f"   Traceback: {traceback.format_exc()}")
+            else:
+                logger.debug(f"ℹ️ Received trade for untracked token {token_address[:8]}...")
+            
+        except Exception as e:
+            logger.error(f"❌ Critical error in handle_trade: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+    
     
     
     def get_metrics(self, token_address: str) -> Optional[MetricsSnapshot]:
