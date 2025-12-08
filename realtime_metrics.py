@@ -1476,6 +1476,8 @@ class MetricsManager:
         new conviction-weighted pressure calculations.
         """
         try:
+            logger.info(f"🎯 MetricsManager received trade: {trade_data.get('size_usd', 0):.2f} USD")
+    
             token_address = trade_data.get('token_address')
 
             if not token_address:
