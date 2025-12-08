@@ -152,24 +152,14 @@ class HeliusWebSocketClient:
             return False
 
 
-    async def fetch_transaction_details(self, signature: str) -> Optional[Dict]:
+    async def fetch_transaction_details(self, signature: str, retry_count: int = 0) -> Optional[Dict]:
         """
-        Fetch full transaction details from Helius using a transaction signature.
-        
-        This is the key piece that makes everything work:
-        1. We receive a log notification with a transaction signature
-        2. We use this function to fetch the full transaction data
-        3. That full data contains all the balance changes and swap details
-        4. We can then parse it to extract trade information
-        
-        Args:
-            signature: Transaction signature from the log notification
-            
-        Returns:
-            Full transaction data including all the details we need for parsing
+        Fetch full transaction details with rate limit handling.
         """
+        max_retries = 3
+        base_delay = 1  # Start with 1 second delay
+    
         try:
-            # Build the RPC request to fetch transaction details
             request_body = {
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -177,28 +167,36 @@ class HeliusWebSocketClient:
                 "params": [
                     signature,
                     {
-                        "encoding": "jsonParsed",  # Get parsed format for easier processing
+                        "encoding": "jsonParsed",
                         "maxSupportedTransactionVersion": 0,
                         "commitment": "confirmed"
                     }
                 ]
             }
-            
-            # Make the HTTP request
+
             async with self.http_session.post(
                 self.http_url,
                 json=request_body,
                 timeout=aiohttp.ClientTimeout(total=5)
             ) as response:
-                if response.status == 200:
-                    data = await response.json()
+                if response.status == 429:
+                    # Rate limited
+                    if retry_count < max_retries:
+                        # Exponential backoff: 1s, 2s, 4s
+                        delay = base_delay * (2 ** retry_count)
+                        logger.warning(f"Rate limited, retrying in {delay}s (attempt {retry_count + 1}/{max_retries})")
+                        await asyncio.sleep(delay)
+                        return await self.fetch_transaction_details(signature, retry_count + 1)
+                    else:
+                        logger.warning(f"Rate limited and max retries reached for {signature[:8]}")
+                        return None
                     
+                elif response.status == 200:
+                    data = await response.json()
                     if 'result' in data and data['result']:
                         self.stats['transactions_fetched'] += 1
                         return data['result']
-                    else:
-                        logger.debug(f"Transaction {signature[:8]} returned no result")
-                        return None
+                    return None
                 else:
                     logger.warning(f"HTTP {response.status} when fetching transaction {signature[:8]}")
                     return None
@@ -359,22 +357,7 @@ class HeliusWebSocketClient:
                     return
                 
                 logger.info(f"   📝 Transaction signature: {signature[:16]}...")
-                # ============================================================
-                # SAMPLING LOGIC - ADD THIS SECTION HERE
-                # ============================================================
-                # Only fetch 1 out of every 5 transactions to avoid rate limits
-                # This reduces API load by 80% while still capturing representative data
-                import random
-            
-                if random.random() > 0.2:  # 80% chance to skip (20% sampling rate)
-                    logger.debug(f"   ⏭️ Skipping transaction {signature[:8]} (sampling to avoid rate limits)")
-                    return
-            
-                logger.info(f"   ✓ Transaction selected for processing (1 in 5 sample)")
-                # ============================================================
-                # END OF SAMPLING LOGIC
-                # ============================================================
-
+                
                 # Now fetch the full transaction details using this signature
                 logger.info(f"   🔄 Fetching full transaction data...")
                 transaction_data = await self.fetch_transaction_details(signature)
