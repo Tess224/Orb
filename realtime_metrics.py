@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Deque, Tuple
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
+from historical_data_collector import HistoricalDataCollector
 import logging
 import math
 
