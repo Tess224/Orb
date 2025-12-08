@@ -2448,7 +2448,55 @@ def get_realtime_metrics(token_address: str):
             'error': str(e),
             'status': 'error'
         }), 500
-
+        
+@app.route('/analysis/build-transitions', methods=['POST'])
+def build_transition_matrix():
+    """
+    Trigger analysis of historical data to build transition probabilities.
+    
+    Run this periodically (like once per day) to update your transition matrix
+    based on the historical data you've collected.
+    
+    Requires access code with admin privileges.
+    """
+    try:
+        data = request.get_json() or {}
+        access_code = data.get('access_code', '')
+        
+        # Only allow with proper access code
+        if access_code != 'ADMIN-2025':
+            return jsonify({
+                'error': 'Admin access required',
+                'status': 'unauthorized'
+            }), 403
+        
+        from state_transition_analyzer import StateTransitionAnalyzer
+        
+        analyzer = StateTransitionAnalyzer()
+        
+        # Try to load existing matrix first
+        analyzer.load_matrix()
+        
+        # Build new matrix from current data
+        analyzer.build_transition_matrix(min_observations=10)
+        
+        # Save for future use
+        analyzer.save_matrix()
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Transition matrix built successfully',
+            'num_states': len(analyzer.transition_matrix),
+            'timestamp': int(time.time())
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error building transition matrix: {e}")
+        return jsonify({
+            'error': str(e),
+            'status': 'error'
+        }), 500
+        
 # ============================================================================
 # INITIALIZATION - This runs when Gunicorn imports the file
 # ============================================================================
