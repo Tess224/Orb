@@ -359,7 +359,22 @@ class HeliusWebSocketClient:
                     return
                 
                 logger.info(f"   📝 Transaction signature: {signature[:16]}...")
-                
+                # ============================================================
+                # SAMPLING LOGIC - ADD THIS SECTION HERE
+                # ============================================================
+                # Only fetch 1 out of every 5 transactions to avoid rate limits
+                # This reduces API load by 80% while still capturing representative data
+                import random
+            
+                if random.random() > 0.2:  # 80% chance to skip (20% sampling rate)
+                    logger.debug(f"   ⏭️ Skipping transaction {signature[:8]} (sampling to avoid rate limits)")
+                    return
+            
+                logger.info(f"   ✓ Transaction selected for processing (1 in 5 sample)")
+                # ============================================================
+                # END OF SAMPLING LOGIC
+                # ============================================================
+
                 # Now fetch the full transaction details using this signature
                 logger.info(f"   🔄 Fetching full transaction data...")
                 transaction_data = await self.fetch_transaction_details(signature)
