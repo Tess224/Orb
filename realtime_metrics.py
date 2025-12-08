@@ -726,6 +726,8 @@ class TokenMetricsTracker:
     
     # Validation passed - proceed with your existing logic
         try:
+            logger.info(f"✅ TRADE ACCEPTED for {self.token_address[:8]}: ${trade_data['size_usd']:.2f} {trade_data['direction'].upper()}")
+    
             trade = Trade(
                 timestamp=trade_data['timestamp'],
                 direction=trade_data['direction'],
@@ -759,9 +761,11 @@ class TokenMetricsTracker:
             
             # Take snapshot every minute
             if current_time - self.last_snapshot_time >= 60:
+                logger.info(f"📸 TAKING SNAPSHOT for {self.token_address[:8]} (age: {self.get_token_age_hours():.1f}h)")
                 self._take_snapshot()
                 self.last_snapshot_time = current_time
-            
+                logger.info(f"✅ SNAPSHOT COMPLETE")
+                
             if trade.size_usd >= 1000:
                 logger.info(
                     f"💰 Large {trade.direction.upper()}: ${trade.size_usd:,.0f} "
