@@ -178,6 +178,8 @@ class TokenMetricsTracker:
             'rejected_trades': 0,
             'validation_errors': {}
         }
+    # Historical data collection for state transitions
+        self.historical_collector = HistoricalDataCollector()
     # NEW ADDITIONS END HERE
 
         logger.info(f"📊 Initialized dynamic-timeframe tracker for {token_address[:8]}... (Liq: ${liquidity_usd:,.0f})")
