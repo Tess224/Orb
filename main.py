@@ -1669,43 +1669,61 @@ def run_websocket_loop(api_key: str):
     Think of this as a separate worker that runs alongside your Flask server,
     constantly listening for trades.
     """
-    global websocket_client, metrics_manager
-    
+    global websocket_client, metrics_manager, websocket_loop
+
     try:
         logger.info("🚀 Starting WebSocket background thread...")
-        
+
         # Create a new event loop for this thread
         # (Each thread needs its own event loop for async operations)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        global websocket_loop
         websocket_loop = loop
-        
+
         # Create the WebSocket client
         websocket_client = HeliusWebSocketClient(api_key)
-        
+
         # Create the metrics manager
         metrics_manager = MetricsManager()
-        
+
         # Connect the two: when WebSocket gets trade data, send it to metrics manager
         websocket_client.add_trade_callback(metrics_manager.handle_trade)
-        
+
         # Define an async function to connect and start listening
         async def connect_and_listen():
             connected = await websocket_client.connect()
             if connected:
                 logger.info("✅ WebSocket connected, now listening for trades...")
+                # This will run forever until an error occurs
                 await websocket_client.listen()
             else:
                 logger.error("❌ Failed to connect WebSocket")
+
+        # CRITICAL FIX: Keep the loop running forever
+        # Don't let it close after the first connection attempt
+        try:
+            loop.run_until_complete(connect_and_listen())
+        except KeyboardInterrupt:
+            logger.info("🛑 WebSocket thread stopping due to keyboard interrupt")
+        except Exception as e:
+            logger.error(f"❌ Error in WebSocket connection: {e}")
         
-        # Run the connection and listening
-        loop.run_until_complete(connect_and_listen())
+        # Keep the loop alive to handle scheduled coroutines
+        # This is crucial - the loop needs to stay open for subscribe_to_pool calls
+        logger.info("🔄 WebSocket listener ended, but keeping event loop alive...")
         
+        # Run the loop forever to handle any future coroutines scheduled from Flask
+        loop.run_forever()
+
     except Exception as e:
-        logger.error(f"❌ Error in WebSocket thread: {e}")
+        logger.error(f"❌ Critical error in WebSocket thread: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
     finally:
-        loop.close()
+        # Only close when the entire thread is shutting down
+        logger.info("🔌 Closing WebSocket event loop")
+        if websocket_loop:
+            websocket_loop.close()
 
 
 def start_websocket_background():
