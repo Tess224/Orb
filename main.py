@@ -2430,7 +2430,11 @@ def get_realtime_metrics(token_address: str):
                 'volume_liquidity_ratio': metrics.vlr_1h,
                 'pressure_intensity_index': metrics.pii,
                 'volume_trend_score': metrics.vts,
-                'volume_exhaustion_index': metrics.vei
+                'volume_exhaustion_index': metrics.vei,
+                'conviction_multiplier': metrics.conviction_multiplier,
+                'conviction_weighted_pressure': metrics.conviction_weighted_pressure,
+                'size_entropy': metrics.size_entropy,
+                'large_trade_pct': metrics.large_trade_pct
             },
             'liquidity_usd': metrics.liquidity_usd,
             'total_trades_processed': metrics.total_trades_processed
