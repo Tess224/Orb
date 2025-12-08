@@ -1377,7 +1377,9 @@ class TokenMetricsTracker:
         )
         
         self.metric_history.append(snapshot)
-        
+        # Save to historical data for state transition analysis
+        self.historical_collector.save_snapshot(self.token_address, snapshot)
+
         if len(self.metric_history) > 1440:
             self.metric_history.pop(0)
         
