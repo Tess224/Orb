@@ -2496,6 +2496,83 @@ def build_transition_matrix():
             'error': str(e),
             'status': 'error'
         }), 500
+
+@app.route('/historical/status', methods=['GET'])
+def historical_data_status():
+    """
+    Check what historical data has been collected.
+    
+    This endpoint shows you which tokens have data files and how many
+    snapshots are in each file. Use this to verify data collection is working.
+    """
+    try:
+        from historical_data_collector import HistoricalDataCollector
+        from pathlib import Path
+        import json
+        
+        collector = HistoricalDataCollector()
+        data_dir = Path(collector.data_directory)
+        
+        if not data_dir.exists():
+            return jsonify({
+                'status': 'no_data',
+                'message': 'Historical data directory does not exist yet',
+                'directory': collector.data_directory
+            }), 200
+        
+        # Get all JSON files
+        token_files = list(data_dir.glob("*.json"))
+        
+        file_info = []
+        total_snapshots = 0
+        
+        for file_path in token_files:
+            try:
+                with open(file_path, 'r') as f:
+                    snapshots = json.load(f)
+                
+                snapshot_count = len(snapshots)
+                total_snapshots += snapshot_count
+                
+                # Get first and last snapshot times for this token
+                if snapshots:
+                    first_time = snapshots[0].get('timestamp', 0)
+                    last_time = snapshots[-1].get('timestamp', 0)
+                    duration_hours = (last_time - first_time) / 3600
+                else:
+                    first_time = 0
+                    last_time = 0
+                    duration_hours = 0
+                
+                file_info.append({
+                    'token_address': file_path.stem,  # Filename without .json
+                    'snapshot_count': snapshot_count,
+                    'duration_hours': round(duration_hours, 2),
+                    'first_snapshot': first_time,
+                    'last_snapshot': last_time
+                })
+                
+            except Exception as e:
+                logger.error(f"Error reading {file_path.name}: {e}")
+        
+        # Sort by snapshot count (most data first)
+        file_info.sort(key=lambda x: x['snapshot_count'], reverse=True)
+        
+        return jsonify({
+            'status': 'success',
+            'directory': collector.data_directory,
+            'total_tokens': len(file_info),
+            'total_snapshots': total_snapshots,
+            'tokens': file_info,
+            'timestamp': int(time.time())
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error checking historical data: {e}")
+        return jsonify({
+            'error': str(e),
+            'status': 'error'
+        }), 500
         
 # ============================================================================
 # INITIALIZATION - This runs when Gunicorn imports the file
