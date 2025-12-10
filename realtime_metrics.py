@@ -81,7 +81,11 @@ class MetricsSnapshot:
     conviction_weighted_pressure: float = 0.0  # NEW: Pressure adjusted for conviction
     size_entropy: float = 0.0  # NEW: How diverse are trade sizes?
     large_trade_pct: float = 0.0  # NEW: Percentage of volume in large trades
-    
+
+    #NEW: Transition probability predictions
+    next_phase_probabilities: Dict = field(default_factory=dict)  # What phases might come next
+    transition_confidence: float = 0.0  # How confident are these predictions (0-1)
+    transition_observations: int = 0  # How many historical observations support this
     # Phase classification
     phase: str = 'dormant'
 
@@ -1335,7 +1339,54 @@ class TokenMetricsTracker:
         
         # Phase classification
         phase = self._classify_phase(vlr_1h, vts, vei, pii, price_change_1h)
+
+        # NEW: Get transition probabilities from historical analysis
+        next_phase_probs = {}
+        transition_conf = 0.0
+        transition_obs = 0
+
+        # Access the global state analyzer
+        from main import state_analyzer
+
+        if state_analyzer and len(state_analyzer.transition_matrix) > 0:
+            # Create a temporary dict with current metrics to query probabilities
+            current_state_dict = {
+                'phase': phase,
+                'vts': vts,
+                'pii': pii,
+                'vei': vei,
+                'conviction_multiplier': conviction_multiplier
+            }
+    
+            # Get probabilities for this state
+            prob_result = state_analyzer.get_transition_probabilities(current_state_dict)
+    
+            if prob_result:
+                # Extract just the phase from each next state key
+                # State keys look like "early_high-vts_strong-buy_fresh_strong-conviction"
+                # We want to extract just the phase part for simpler output
+                raw_probs = prob_result['probabilities']
         
+                # Group by next phase (ignoring the detailed metrics)
+                phase_probs = {}
+                for next_state_key, prob in raw_probs.items():
+                    # Extract phase (it's the first part before the first underscore)
+                    next_phase = next_state_key.split('_')[0]
+            
+                    # Accumulate probability for this phase
+                    if next_phase in phase_probs:
+                        phase_probs[next_phase] += prob
+                    else:
+                        phase_probs[next_phase] = prob
+        
+                next_phase_probs = phase_probs
+                transition_conf = prob_result['confidence']
+                transition_obs = prob_result['observations']
+        
+                logger.debug(
+                    f"📊 Transition probs for {self.token_address[:8]} in {phase}: {next_phase_probs}"
+                )
+
         # Create snapshot with age information
         snapshot = MetricsSnapshot(
             timestamp=current_time,
@@ -1372,6 +1423,9 @@ class TokenMetricsTracker:
             size_entropy=size_entropy,
             large_trade_pct=large_trade_pct,
             phase=phase,
+            next_phase_probabilities=next_phase_probs,  # NEW
+            transition_confidence=transition_conf,  # NEW
+            transition_observations=transition_obs,  # NEW
             liquidity_usd=self.liquidity_usd,
             total_trades_processed=self.total_trades
         )
