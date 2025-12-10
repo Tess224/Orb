@@ -56,6 +56,7 @@ metrics_manager: Optional[MetricsManager] = None
 websocket_thread: Optional[threading.Thread] = None
 token_to_pool_map: Dict[str, str] = {}
 websocket_loop = None  # Will hold the WebSocket's event loop
+state_analyzer = None
 
 # Rate limiting configuration
 DAILY_ANALYSIS_LIMIT = 10  # Default limit per access code per day
