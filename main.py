@@ -2579,6 +2579,33 @@ def historical_data_status():
 # INITIALIZATION - This runs when Gunicorn imports the file
 # ============================================================================
 
+def initialize_state_analyzer():
+    """
+    Initialize the state transition analyzer and load the matrix if it exists.
+    
+    This gets called when the application starts. If we have a saved transition
+    matrix from previous analysis, we load it so it's ready to use for real-time
+    predictions.
+    """
+    global state_analyzer
+    
+    try:
+        from state_transition_analyzer import StateTransitionAnalyzer
+        
+        state_analyzer = StateTransitionAnalyzer()
+        
+        # Try to load previously calculated matrix
+        if state_analyzer.load_matrix():
+            logger.info("✅ Loaded existing transition matrix for real-time predictions")
+        else:
+            logger.info("ℹ️ No existing transition matrix found - predictions will be unavailable until you build one")
+            logger.info("   Build a matrix by calling POST /analysis/build-transitions after collecting data")
+        
+    except Exception as e:
+        logger.error(f"❌ Error initializing state analyzer: {e}")
+        state_analyzer = None
+
+
 def initialize_system():
     """
     Initialize the system when the app starts.
@@ -2594,6 +2621,13 @@ def initialize_system():
     # Start the WebSocket background thread
     logger.info("🔧 Initializing real-time tracking system...")
     start_websocket_background()
+    # Start the WebSocket background thread
+    logger.info("🔧 Initializing real-time tracking system...")
+    start_websocket_background()
+    
+    # NEW CODE: Initialize state transition analyzer
+    logger.info("🔧 Initializing state transition analyzer...")
+    initialize_state_analyzer()
     
     logger.info("=" * 70)
 
