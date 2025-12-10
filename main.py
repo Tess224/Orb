@@ -2455,10 +2455,9 @@ def build_transition_matrix():
     """
     Trigger analysis of historical data to build transition probabilities.
     
-    Run this periodically (like once per day) to update your transition matrix
-    based on the historical data you've collected.
-    
-    Requires access code with admin privileges.
+    Run this after collecting data for a while (ideally at least a day).
+    This processes all your historical snapshots and builds a transition matrix
+    that predicts what's likely to happen next given the current state.
     """
     try:
         data = request.get_json() or {}
@@ -2471,32 +2470,54 @@ def build_transition_matrix():
                 'status': 'unauthorized'
             }), 403
         
+        global state_analyzer
+        
         from state_transition_analyzer import StateTransitionAnalyzer
         
+        # Create fresh analyzer for building
         analyzer = StateTransitionAnalyzer()
         
-        # Try to load existing matrix first
-        analyzer.load_matrix()
-        
-        # Build new matrix from current data
+        # Build new matrix from all historical data
+        logger.info("🔬 Starting transition matrix analysis...")
         analyzer.build_transition_matrix(min_observations=10)
         
-        # Save for future use
+        if len(analyzer.transition_matrix) == 0:
+            return jsonify({
+                'status': 'insufficient_data',
+                'message': 'Not enough historical data yet to build reliable probabilities',
+                'recommendation': 'Keep tracking tokens for longer to accumulate more data'
+            }), 200
+        
+        # Save the matrix to disk
         analyzer.save_matrix()
+        
+        # CRITICAL: Update the global analyzer so real-time predictions use the new matrix
+        state_analyzer = analyzer
+        
+        # Return statistics about what was built
+        total_observations = sum(analyzer.observation_counts.values())
+        avg_observations = total_observations / len(analyzer.transition_matrix) if analyzer.transition_matrix else 0
         
         return jsonify({
             'status': 'success',
-            'message': 'Transition matrix built successfully',
-            'num_states': len(analyzer.transition_matrix),
+            'message': 'Transition matrix built and loaded successfully',
+            'statistics': {
+                'num_states': len(analyzer.transition_matrix),
+                'total_observations': total_observations,
+                'avg_observations_per_state': round(avg_observations, 1)
+            },
             'timestamp': int(time.time())
         }), 200
         
     except Exception as e:
         logger.error(f"❌ Error building transition matrix: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
             'error': str(e),
             'status': 'error'
         }), 500
+
 
 @app.route('/historical/status', methods=['GET'])
 def historical_data_status():
