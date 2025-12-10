@@ -50,7 +50,7 @@ wallet_analysis_cache: Dict[str, Dict] = {}
 # Rate limiting storage - tracks how many analyses each access code has used
 # Structure: {'ACCESS-CODE': {'count': 5, 'reset_time': 1234567890}}
 rate_limit_storage: Dict[str, Dict] = {}
-# NEW GLOBALS FOR REAL-TIME SYSTEM
+# NEW GLOBALS FOR REAL-TIME SYSTEMm
 websocket_client: Optional[HeliusWebSocketClient] = None
 metrics_manager: Optional[MetricsManager] = None
 websocket_thread: Optional[threading.Thread] = None
