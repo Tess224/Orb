@@ -2437,6 +2437,11 @@ def get_realtime_metrics(token_address: str):
                 'size_entropy': metrics.size_entropy,
                 'large_trade_pct': metrics.large_trade_pct
             },
+            'predictions': {
+            'next_phase_probabilities': metrics.next_phase_probabilities,
+            'transition_confidence': metrics.transition_confidence,
+            'transition_observations': metrics.transition_observations
+            },
             'liquidity_usd': metrics.liquidity_usd,
             'total_trades_processed': metrics.total_trades_processed
         }
