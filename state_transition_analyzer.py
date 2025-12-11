@@ -1,9 +1,23 @@
+"""
+State Transition Analysis System
+
+This module processes historical snapshot data to calculate transition probabilities.
+It answers questions like: "Given that a token is currently in early phase with high VTS,
+what are the probabilities it will be in each phase one hour from now?"
+
+The approach:
+1. Load historical snapshots from multiple tokens
+2. For each snapshot, identify its "state" (phase + discretized metrics)
+3. Look at what state the token was in N hours later
+4. Count frequencies to calculate probabilities
+5. Store these probabilities in a lookup table
+"""
+
 import json
 import logging
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from typing import Dict, List, Tuple, Optional
 from collections import defaultdict, Counter
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
