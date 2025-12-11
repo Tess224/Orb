@@ -2648,21 +2648,57 @@ def initialize_state_analyzer():
     predictions.
     """
     global state_analyzer
-    
+
     try:
+        logger.info("=" * 70)
+        logger.info("🔧 ATTEMPTING TO INITIALIZE STATE TRANSITION ANALYZER")
+        logger.info("=" * 70)
+        
+        # Try to import the class
+        logger.info("Step 1: Importing StateTransitionAnalyzer class...")
         from state_transition_analyzer import StateTransitionAnalyzer
+        logger.info("✅ Import successful!")
         
+        # Try to create an instance
+        logger.info("Step 2: Creating StateTransitionAnalyzer instance...")
         state_analyzer = StateTransitionAnalyzer()
+        logger.info("✅ Instance created successfully!")
         
-        # Try to load previously calculated matrix
-        if state_analyzer.load_matrix():
-            logger.info("✅ Loaded existing transition matrix for real-time predictions")
+        # Check if it loaded a matrix
+        logger.info("Step 3: Checking for existing transition matrix...")
+        if state_analyzer.transition_matrix and len(state_analyzer.transition_matrix) > 0:
+            logger.info(f"✅ Loaded existing transition matrix with {len(state_analyzer.transition_matrix)} states")
+            logger.info(f"   Total transitions: {state_analyzer.total_transitions}")
+            logger.info(f"   Confidence: {state_analyzer.confidence_score:.1%}")
         else:
             logger.info("ℹ️ No existing transition matrix found - predictions will be unavailable until you build one")
             logger.info("   Build a matrix by calling POST /analysis/build-transitions after collecting data")
         
+        logger.info("=" * 70)
+        logger.info("✅ STATE TRANSITION ANALYZER INITIALIZED SUCCESSFULLY")
+        logger.info("=" * 70)
+
+    except ImportError as e:
+        logger.error("=" * 70)
+        logger.error("❌ IMPORT ERROR - Cannot find state_transition_analyzer.py")
+        logger.error("=" * 70)
+        logger.error(f"Error message: {e}")
+        logger.error("This means the file 'state_transition_analyzer.py' is not in your project directory")
+        logger.error("or there's a syntax error in that file preventing it from being imported.")
+        import traceback
+        logger.error("Full traceback:")
+        logger.error(traceback.format_exc())
+        state_analyzer = None
+        
     except Exception as e:
-        logger.error(f"❌ Error initializing state analyzer: {e}")
+        logger.error("=" * 70)
+        logger.error("❌ UNEXPECTED ERROR DURING INITIALIZATION")
+        logger.error("=" * 70)
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error message: {e}")
+        import traceback
+        logger.error("Full traceback:")
+        logger.error(traceback.format_exc())
         state_analyzer = None
 
 
