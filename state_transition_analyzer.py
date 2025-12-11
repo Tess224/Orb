@@ -1,27 +1,11 @@
-"""
-State Transition Analysis System
-
-This module processes historical snapshot data to calculate transition probabilities.
-It answers questions like: "Given that a token is currently in early phase with high VTS,
-what are the probabilities it will be in each phase one hour from now?"
-
-The approach:
-1. Load historical snapshots from multiple tokens
-2. For each snapshot, identify its "state" (phase + discretized metrics)
-3. Look at what state the token was in N hours later
-4. Count frequencies to calculate probabilities
-5. Store these probabilities in a lookup table
-"""
-
 import json
 import logging
-from typing import Dict, List, Tuple, Optional
-from collections import defaultdict, Counter
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
+from collections import defaultdict, Counter
 
 logger = logging.getLogger(__name__)
-
-
 
 class StateTransitionAnalyzer:
     """
@@ -145,10 +129,13 @@ class StateTransitionAnalyzer:
         except Exception as e:
             logger.error(f"❌ Error saving transitions: {e}")
     
-    def build_transition_matrix(self) -> dict:
+    def build_transition_matrix(self, min_observations: int = 5) -> dict:
         """
         Build the transition probability matrix from historical data.
         Now includes detailed debug logging and confidence scoring.
+        
+        Args:
+            min_observations: Minimum number of transitions required to build matrix (default: 5)
         
         Returns:
             Dictionary with matrix, confidence, and diagnostic info
@@ -222,15 +209,15 @@ class StateTransitionAnalyzer:
         logger.info(f"🎲 Calculated confidence: {confidence:.1%} ({confidence_label})")
         
         # Don't build matrix if we have too few transitions
-        if valid_transitions < 5:
-            logger.warning(f"⚠️ Only {valid_transitions} valid transitions - need at least 5 to build matrix")
+        if valid_transitions < min_observations:
+            logger.warning(f"⚠️ Only {valid_transitions} valid transitions - need at least {min_observations} to build matrix")
             logger.warning("   Continue tracking tokens to collect more transition data")
             return {
                 'success': False,
                 'reason': 'insufficient_data',
                 'valid_transitions': valid_transitions,
-                'required_minimum': 5,
-                'message': 'Need at least 5 valid transitions to build a matrix'
+                'required_minimum': min_observations,
+                'message': f'Need at least {min_observations} valid transitions to build a matrix'
             }
         
         # Build probability matrix
@@ -397,4 +384,4 @@ class StateTransitionAnalyzer:
             'sample_transitions': transitions[:5] if transitions else [],
             'matrix_exists': self.matrix_file.exists(),
             'transitions_file_exists': self.transitions_file.exists()
-        }
+                    }
