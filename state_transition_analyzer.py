@@ -22,347 +22,379 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+
 class StateTransitionAnalyzer:
     """
-    Analyzes historical data to build transition probability matrices.
-    
-    This is the brain that learns from history. After processing thousands of
-    snapshots, it can tell you things like "tokens in early phase with high VTS
-    stay in early phase seventy percent of the time over the next hour."
+    Analyzes phase transitions and builds probability matrices.
+    Now includes detailed debug logging and confidence-based building.
     """
     
-    def __init__(self, data_directory: str = "historical_data"):
+    def __init__(self, matrix_file: str = "transition_matrix.json", 
+                 transitions_file: str = "transition_history.json"):
         """
-        Initialize the analyzer.
+        Initialize the analyzer with file paths for storing data.
         
         Args:
-            data_directory: Where historical JSON files are stored
+            matrix_file: Where to save the built transition probability matrix
+            transitions_file: Where to save raw transition history for analysis
         """
-        self.data_directory = data_directory
-        
-        # This will store our learned transition probabilities
-        # Structure: {state_key: {next_state: probability}}
+        self.matrix_file = Path(matrix_file)
+        self.transitions_file = Path(transitions_file)
         self.transition_matrix = {}
+        self.transition_counts = defaultdict(lambda: defaultdict(int))
+        self.confidence_score = 0.0
+        self.total_transitions = 0
         
-        # Track how many observations went into each probability
-        # This helps us know which probabilities are reliable
-        self.observation_counts = {}
-        
+        logger.info("🔧 Initializing state transition analyzer...")
+        self._load_matrix()
         logger.info("🧠 State Transition Analyzer initialized")
     
-    
-    def discretize_metrics(self, snapshot: Dict) -> Dict[str, str]:
-        """
-        Convert continuous metrics into discrete buckets.
-        
-        Instead of storing exact VTS values like 2.47, we bucket them into
-        categories like "medium". This makes it possible to find patterns
-        because we see the same bucket values many times.
-        
-        Think of it like rounding - instead of dealing with infinite possible
-        temperatures, we say "cold", "warm", or "hot".
-        
-        Args:
-            snapshot: A snapshot dictionary with metrics
-            
-        Returns:
-            Dictionary mapping metric names to bucket labels
-        """
-        discretized = {}
-        
-        # VTS buckets
-        vts = snapshot.get('vts', 1.0)
-        if vts < 1.5:
-            discretized['vts'] = 'low'
-        elif vts < 3.0:
-            discretized['vts'] = 'medium'
-        else:
-            discretized['vts'] = 'high'
-        
-        # PII buckets (pressure intensity)
-        pii = snapshot.get('pii', 0.0)
-        if abs(pii) < 0.3:
-            discretized['pii'] = 'neutral'
-        elif pii >= 0.3:
-            discretized['pii'] = 'strong_buy'
-        else:
-            discretized['pii'] = 'strong_sell'
-        
-        # VEI buckets (exhaustion)
-        vei = snapshot.get('vei', 1.0)
-        if vei > 0.7:
-            discretized['vei'] = 'fresh'
-        elif vei > 0.4:
-            discretized['vei'] = 'moderate'
-        else:
-            discretized['vei'] = 'exhausted'
-        
-        # Conviction buckets
-        conviction = snapshot.get('conviction_multiplier', 1.0)
-        if conviction < 0.8:
-            discretized['conviction'] = 'weak'
-        elif conviction < 1.2:
-            discretized['conviction'] = 'neutral'
-        else:
-            discretized['conviction'] = 'strong'
-        
-        return discretized
-    
-    
-    def create_state_key(self, snapshot: Dict) -> str:
-        """
-        Create a unique identifier for a state.
-        
-        A state is defined by the phase plus discretized metrics. This key
-        is used to look up transition probabilities.
-        
-        Example: "early_high-vts_strong-buy_fresh_strong-conviction"
-        
-        Args:
-            snapshot: Snapshot dictionary
-            
-        Returns:
-            String key representing this state
-        """
-        phase = snapshot.get('phase', 'dormant')
-        metrics = self.discretize_metrics(snapshot)
-        
-        # Build a composite key
-        key_parts = [
-            phase,
-            f"{metrics['vts']}-vts",
-            f"{metrics['pii']}-pii",
-            f"{metrics['vei']}-vei",
-            f"{metrics['conviction']}-conviction"
-        ]
-        
-        return "_".join(key_parts)
-    
-    
-    def analyze_token_history(self, snapshots: List[Dict], time_horizon_hours: int = 1) -> Dict:
-        """
-        Analyze one token's history to extract state transitions.
-        
-        We walk through the snapshots chronologically. For each snapshot, we
-        record its current state and then look ahead to see what state it
-        transitioned to after the specified time horizon.
-        
-        Args:
-            snapshots: List of snapshot dictionaries for one token
-            time_horizon_hours: How many hours ahead to look (default 1)
-            
-        Returns:
-            Dictionary of observed transitions
-        """
-        transitions = defaultdict(list)
-        
-        # We need snapshots sorted by time
-        snapshots = sorted(snapshots, key=lambda s: s['timestamp'])
-        
-        # Walk through each snapshot
-        for i in range(len(snapshots) - 1):
-            current_snapshot = snapshots[i]
-            current_state = self.create_state_key(current_snapshot)
-            current_time = current_snapshot['timestamp']
-            
-            # Find the snapshot that's approximately time_horizon_hours later
-            target_time = current_time + (time_horizon_hours * 3600)
-            
-            # Find the closest snapshot to our target time
-            # We look for a snapshot within +/- 10 minutes of the target
-            best_match = None
-            best_diff = float('inf')
-            
-            for j in range(i + 1, len(snapshots)):
-                candidate = snapshots[j]
-                time_diff = abs(candidate['timestamp'] - target_time)
-                
-                # If we're within 10 minutes, consider it
-                if time_diff < 600:  # 600 seconds = 10 minutes
-                    if time_diff < best_diff:
-                        best_diff = time_diff
-                        best_match = candidate
-                
-                # If we've gone past our target time by more than 10 minutes, stop looking
-                if candidate['timestamp'] > target_time + 600:
-                    break
-            
-            # If we found a matching future snapshot, record the transition
-            if best_match:
-                next_state = self.create_state_key(best_match)
-                transitions[current_state].append(next_state)
-        
-        return transitions
-    
-    
-    def build_transition_matrix(self, min_observations: int = 10):
-        """
-        Process all historical data to build the transition probability matrix.
-        
-        This is the main analysis function. It loads all token histories,
-        extracts transitions, and calculates probabilities.
-        
-        Args:
-            min_observations: Minimum number of observations needed to trust a probability
-        """
-        logger.info("🔬 Building transition matrix from historical data...")
-        
-        # Collect transitions from all tokens
-        all_transitions = defaultdict(list)
-        
-        # Get all token files
-        data_path = Path(self.data_directory)
-        if not data_path.exists():
-            logger.warning(f"⚠️ Data directory {self.data_directory} doesn't exist yet")
-            return
-        
-        token_files = list(data_path.glob("*.json"))
-        logger.info(f"📂 Found {len(token_files)} token history files")
-        
-        if len(token_files) == 0:
-            logger.warning("⚠️ No historical data files found. Keep running to collect data.")
-            return
-        
-        # Process each token's history
-        tokens_processed = 0
-        total_transitions = 0
-        
-        for file_path in token_files:
+    def _load_matrix(self):
+        """Load existing transition matrix from disk if it exists."""
+        if self.matrix_file.exists():
             try:
-                with open(file_path, 'r') as f:
-                    snapshots = json.load(f)
-                
-                if len(snapshots) < 10:
-                    # Not enough data from this token yet
-                    continue
-                
-                # Extract transitions from this token
-                token_transitions = self.analyze_token_history(snapshots)
-                
-                # Merge into our overall collection
-                for state, next_states in token_transitions.items():
-                    all_transitions[state].extend(next_states)
-                    total_transitions += len(next_states)
-                
-                tokens_processed += 1
-                
+                with open(self.matrix_file, 'r') as f:
+                    data = json.load(f)
+                    self.transition_matrix = data.get('matrix', {})
+                    self.confidence_score = data.get('confidence', 0.0)
+                    self.total_transitions = data.get('total_transitions', 0)
+                    logger.info(f"✅ Loaded transition matrix with {len(self.transition_matrix)} states")
+                    logger.info(f"   Confidence: {self.confidence_score:.1%}, Total transitions: {self.total_transitions}")
             except Exception as e:
-                logger.error(f"❌ Error processing {file_path.name}: {e}")
-        
-        logger.info(f"✅ Processed {tokens_processed} tokens, found {total_transitions} transitions")
-        
-        # Now calculate probabilities from frequencies
-        for state, next_states in all_transitions.items():
-            observation_count = len(next_states)
-            
-            # Only calculate probabilities if we have enough observations
-            if observation_count < min_observations:
-                continue
-            
-            # Count frequency of each next state
-            state_counts = Counter(next_states)
-            
-            # Convert counts to probabilities
-            probabilities = {}
-            for next_state, count in state_counts.items():
-                probabilities[next_state] = count / observation_count
-            
-            # Store in our matrix
-            self.transition_matrix[state] = probabilities
-            self.observation_counts[state] = observation_count
-        
-        logger.info(f"📊 Built transition matrix with {len(self.transition_matrix)} states")
-        
-        # Log some example transitions
-        if len(self.transition_matrix) > 0:
-            example_state = list(self.transition_matrix.keys())[0]
-            example_probs = self.transition_matrix[example_state]
-            logger.info(f"📝 Example state: {example_state}")
-            logger.info(f"   Transitions: {dict(list(example_probs.items())[:3])}")
+                logger.error(f"❌ Error loading transition matrix: {e}")
+                self.transition_matrix = {}
+        else:
+            logger.warning(f"⚠️ Matrix file {self.matrix_file} doesn't exist")
+            logger.info("ℹ️ No existing transition matrix found - predictions will be unavailable until you build one")
+            logger.info("   Build a matrix by calling POST /analysis/build-transitions after collecting data")
     
-    
-    def get_transition_probabilities(self, current_snapshot: Dict) -> Optional[Dict]:
-        """
-        Get transition probabilities for a current state.
-        
-        This is what your real-time system will call. Given the current metrics,
-        it returns probabilities for what will happen next.
-        
-        Args:
-            current_snapshot: Current metrics snapshot
-            
-        Returns:
-            Dictionary mapping next states to probabilities, or None if no data
-        """
-        state_key = self.create_state_key(current_snapshot)
-        
-        if state_key not in self.transition_matrix:
-            # We haven't seen this state enough times to have reliable probabilities
-            return None
-        
-        probabilities = self.transition_matrix[state_key]
-        observation_count = self.observation_counts[state_key]
-        
-        return {
-            'probabilities': probabilities,
-            'confidence': min(observation_count / 50, 1.0),  # Confidence scales with observations
-            'observations': observation_count
-        }
-    
-    
-    def save_matrix(self, filename: str = "transition_matrix.json"):
-        """
-        Save the transition matrix to a file so we don't have to recalculate it.
-        
-        Args:
-            filename: Where to save the matrix
-        """
+    def _save_matrix(self):
+        """Save the transition matrix to disk with metadata."""
         try:
             data = {
-                'transition_matrix': self.transition_matrix,
-                'observation_counts': self.observation_counts,
-                'metadata': {
-                    'num_states': len(self.transition_matrix),
-                    'total_observations': sum(self.observation_counts.values())
-                }
+                'matrix': self.transition_matrix,
+                'confidence': self.confidence_score,
+                'total_transitions': self.total_transitions,
+                'last_updated': datetime.utcnow().isoformat(),
+                'states': list(self.transition_matrix.keys())
             }
-            
-            with open(filename, 'w') as f:
+            with open(self.matrix_file, 'w') as f:
                 json.dump(data, f, indent=2)
-            
-            logger.info(f"💾 Saved transition matrix to {filename}")
-            
+            logger.info(f"💾 Saved transition matrix to {self.matrix_file}")
         except Exception as e:
-            logger.error(f"❌ Error saving matrix: {e}")
+            logger.error(f"❌ Error saving transition matrix: {e}")
     
-    
-    def load_matrix(self, filename: str = "transition_matrix.json") -> bool:
+    def log_transition(self, token_address: str, from_phase: str, to_phase: str, 
+                      metrics: dict, duration_seconds: float):
         """
-        Load a previously saved transition matrix.
+        Log a phase transition when it happens in real-time.
+        This is called by MetricsManager when a phase change is detected.
         
         Args:
-            filename: File to load from
+            token_address: The token that transitioned
+            from_phase: Previous phase name
+            to_phase: New phase name
+            metrics: Current metrics snapshot
+            duration_seconds: How long the token was in from_phase
+        """
+        # Create transition record with all relevant data
+        transition = {
+            'token_address': token_address,
+            'from_phase': from_phase,
+            'to_phase': to_phase,
+            'timestamp': datetime.utcnow().isoformat(),
+            'duration_seconds': duration_seconds,
+            'metrics': {
+                'bsr': metrics.get('bsr', 0),
+                'vlr': metrics.get('vlr', 0),
+                'pii': metrics.get('pii', 0),
+                'vts': metrics.get('vts', 0),
+                'vei': metrics.get('vei', 0),
+                'token_age_hours': metrics.get('token_age_hours', 0)
+            }
+        }
+        
+        # Load existing transitions
+        transitions = self._load_transitions()
+        
+        # Add new transition
+        transitions.append(transition)
+        
+        # Save back to disk
+        self._save_transitions(transitions)
+        
+        logger.info(f"📝 Logged transition: {from_phase} → {to_phase} for {token_address[:8]}...")
+        logger.info(f"   Duration in {from_phase}: {duration_seconds:.0f}s ({duration_seconds/60:.1f}m)")
+    
+    def _load_transitions(self) -> List[dict]:
+        """Load all historical transitions from disk."""
+        if self.transitions_file.exists():
+            try:
+                with open(self.transitions_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"❌ Error loading transitions: {e}")
+                return []
+        return []
+    
+    def _save_transitions(self, transitions: List[dict]):
+        """Save transitions to disk."""
+        try:
+            with open(self.transitions_file, 'w') as f:
+                json.dump(transitions, f, indent=2)
+        except Exception as e:
+            logger.error(f"❌ Error saving transitions: {e}")
+    
+    def build_transition_matrix(self) -> dict:
+        """
+        Build the transition probability matrix from historical data.
+        Now includes detailed debug logging and confidence scoring.
+        
+        Returns:
+            Dictionary with matrix, confidence, and diagnostic info
+        """
+        logger.info("🔬 Starting transition matrix analysis...")
+        logger.info("📬 Building transition matrix from historical data...")
+        
+        # Load all transitions
+        transitions = self._load_transitions()
+        total_transitions = len(transitions)
+        
+        logger.info(f"📊 Found {total_transitions} total transition records in history file")
+        
+        # Debug: Show sample of transitions
+        if total_transitions > 0:
+            logger.info("🔍 Sample transitions (first 3):")
+            for i, trans in enumerate(transitions[:3]):
+                logger.info(f"   [{i+1}] {trans.get('from_phase', 'UNKNOWN')} → {trans.get('to_phase', 'UNKNOWN')} "
+                          f"at {trans.get('timestamp', 'N/A')}")
+        
+        # Group transitions by token
+        token_transitions = defaultdict(list)
+        for trans in transitions:
+            token_addr = trans.get('token_address')
+            if token_addr:
+                token_transitions[token_addr].append(trans)
+        
+        num_tokens = len(token_transitions)
+        logger.info(f"🪙 Processed {num_tokens} unique tokens")
+        
+        # Debug: Show transitions per token
+        for token_addr, trans_list in list(token_transitions.items())[:3]:
+            logger.info(f"   Token {token_addr[:8]}... has {len(trans_list)} transitions")
+        
+        # Count transitions between states
+        transition_counts = defaultdict(lambda: defaultdict(int))
+        valid_transitions = 0
+        invalid_transitions = 0
+        
+        for trans in transitions:
+            from_phase = trans.get('from_phase')
+            to_phase = trans.get('to_phase')
+            
+            # Validate transition has required fields
+            if from_phase and to_phase and from_phase != to_phase:
+                transition_counts[from_phase][to_phase] += 1
+                valid_transitions += 1
+            else:
+                invalid_transitions += 1
+                logger.debug(f"⚠️ Invalid transition: {from_phase} → {to_phase}")
+        
+        logger.info(f"✅ Valid transitions: {valid_transitions}")
+        logger.info(f"❌ Invalid transitions (skipped): {invalid_transitions}")
+        
+        # Debug: Show what states were found
+        unique_states = set(transition_counts.keys())
+        logger.info(f"🎯 Found {len(unique_states)} distinct FROM states: {list(unique_states)}")
+        
+        # Show transition counts
+        logger.info("📈 Transition count breakdown:")
+        for from_state, to_states in transition_counts.items():
+            total_from = sum(to_states.values())
+            logger.info(f"   {from_state}: {total_from} transitions")
+            for to_state, count in to_states.items():
+                logger.info(f"      → {to_state}: {count} times")
+        
+        # Determine confidence based on number of valid transitions
+        confidence = self._calculate_confidence(valid_transitions)
+        confidence_label = self._get_confidence_label(confidence)
+        
+        logger.info(f"🎲 Calculated confidence: {confidence:.1%} ({confidence_label})")
+        
+        # Don't build matrix if we have too few transitions
+        if valid_transitions < 5:
+            logger.warning(f"⚠️ Only {valid_transitions} valid transitions - need at least 5 to build matrix")
+            logger.warning("   Continue tracking tokens to collect more transition data")
+            return {
+                'success': False,
+                'reason': 'insufficient_data',
+                'valid_transitions': valid_transitions,
+                'required_minimum': 5,
+                'message': 'Need at least 5 valid transitions to build a matrix'
+            }
+        
+        # Build probability matrix
+        matrix = {}
+        for from_state, to_states in transition_counts.items():
+            total = sum(to_states.values())
+            matrix[from_state] = {}
+            
+            for to_state, count in to_states.items():
+                probability = count / total
+                matrix[from_state][to_state] = {
+                    'probability': probability,
+                    'count': count,
+                    'sample_size': total
+                }
+        
+        # Store and save
+        self.transition_matrix = matrix
+        self.confidence_score = confidence
+        self.total_transitions = valid_transitions
+        self._save_matrix()
+        
+        logger.info(f"✅ Built transition matrix with {len(matrix)} states")
+        logger.info(f"   Confidence: {confidence:.1%} ({confidence_label})")
+        logger.info(f"   Based on {valid_transitions} valid transitions")
+        
+        return {
+            'success': True,
+            'states': len(matrix),
+            'valid_transitions': valid_transitions,
+            'invalid_transitions': invalid_transitions,
+            'confidence': confidence,
+            'confidence_label': confidence_label,
+            'matrix': matrix
+        }
+    
+    def _calculate_confidence(self, num_transitions: int) -> float:
+        """
+        Calculate confidence score based on number of transitions.
+        
+        Confidence tiers:
+        - < 5 transitions: Too little data (don't build)
+        - 5-14 transitions: LOW confidence (0.3-0.5)
+        - 15-29 transitions: MEDIUM confidence (0.5-0.7)
+        - 30+ transitions: HIGH confidence (0.7-0.9)
+        """
+        if num_transitions < 5:
+            return 0.0
+        elif num_transitions < 15:
+            # LOW: scale from 0.3 to 0.5
+            return 0.3 + (num_transitions - 5) / 10 * 0.2
+        elif num_transitions < 30:
+            # MEDIUM: scale from 0.5 to 0.7
+            return 0.5 + (num_transitions - 15) / 15 * 0.2
+        else:
+            # HIGH: scale from 0.7 to 0.9, capped at 0.9
+            return min(0.9, 0.7 + (num_transitions - 30) / 70 * 0.2)
+    
+    def _get_confidence_label(self, confidence: float) -> str:
+        """Convert confidence score to human-readable label."""
+        if confidence < 0.3:
+            return "INSUFFICIENT"
+        elif confidence < 0.5:
+            return "LOW"
+        elif confidence < 0.7:
+            return "MEDIUM"
+        else:
+            return "HIGH"
+    
+    def predict_next_phase(self, current_phase: str, metrics: dict) -> dict:
+        """
+        Predict the next phase and its probability.
+        
+        Args:
+            current_phase: Current phase the token is in
+            metrics: Current metrics snapshot
             
         Returns:
-            True if loaded successfully
+            Dictionary with predictions and confidence
         """
-        try:
-            if not Path(filename).exists():
-                logger.warning(f"⚠️ Matrix file {filename} doesn't exist")
-                return False
+        if not self.transition_matrix or current_phase not in self.transition_matrix:
+            return {
+                'success': False,
+                'reason': 'no_data',
+                'message': f'No historical data for phase: {current_phase}'
+            }
+        
+        # Get transition probabilities from current phase
+        transitions = self.transition_matrix[current_phase]
+        
+        # Sort by probability
+        sorted_transitions = sorted(
+            transitions.items(),
+            key=lambda x: x[1]['probability'],
+            reverse=True
+        )
+        
+        # Get most likely next phase
+        if sorted_transitions:
+            most_likely_phase, data = sorted_transitions[0]
             
-            with open(filename, 'r') as f:
-                data = json.load(f)
+            return {
+                'success': True,
+                'current_phase': current_phase,
+                'predictions': [
+                    {
+                        'phase': phase,
+                        'probability': data['probability'],
+                        'sample_size': data['sample_size']
+                    }
+                    for phase, data in sorted_transitions
+                ],
+                'most_likely': {
+                    'phase': most_likely_phase,
+                    'probability': data['probability'],
+                    'sample_size': data['sample_size']
+                },
+                'model_confidence': self.confidence_score,
+                'confidence_label': self._get_confidence_label(self.confidence_score)
+            }
+        
+        return {
+            'success': False,
+            'reason': 'no_transitions',
+            'message': f'No transitions found from phase: {current_phase}'
+        }
+    
+    def get_debug_info(self) -> dict:
+        """
+        Get detailed debug information about transitions and matrix.
+        This is helpful for troubleshooting.
+        """
+        transitions = self._load_transitions()
+        
+        # Analyze transitions
+        phase_counter = Counter()
+        from_phase_counter = Counter()
+        to_phase_counter = Counter()
+        tokens_with_transitions = set()
+        
+        for trans in transitions:
+            from_phase = trans.get('from_phase')
+            to_phase = trans.get('to_phase')
+            token = trans.get('token_address')
             
-            self.transition_matrix = data['transition_matrix']
-            self.observation_counts = data['observation_counts']
-            
-            logger.info(f"📖 Loaded transition matrix from {filename}")
-            logger.info(f"   States: {data['metadata']['num_states']}")
-            logger.info(f"   Total observations: {data['metadata']['total_observations']}")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error loading matrix: {e}")
-            return False
+            if from_phase:
+                from_phase_counter[from_phase] += 1
+            if to_phase:
+                to_phase_counter[to_phase] += 1
+            if from_phase and to_phase:
+                phase_counter[f"{from_phase} → {to_phase}"] += 1
+            if token:
+                tokens_with_transitions.add(token)
+        
+        return {
+            'total_transitions_logged': len(transitions),
+            'unique_tokens': len(tokens_with_transitions),
+            'matrix_states': len(self.transition_matrix),
+            'matrix_confidence': self.confidence_score,
+            'confidence_label': self._get_confidence_label(self.confidence_score),
+            'from_phases': dict(from_phase_counter),
+            'to_phases': dict(to_phase_counter),
+            'top_transitions': dict(phase_counter.most_common(10)),
+            'sample_transitions': transitions[:5] if transitions else [],
+            'matrix_exists': self.matrix_file.exists(),
+            'transitions_file_exists': self.transitions_file.exists()
+        }
