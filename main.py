@@ -2525,11 +2525,17 @@ def build_transition_matrix():
 
 @app.route('/analysis/debug-transitions', methods=['GET'])
 def debug_transitions():
-    """
-    NEW ENDPOINT: Get detailed debug info about stored transitions.
-    This helps you see what's actually being logged and why matrix might have 0 states.
-    """
+    """Get detailed debug information about stored transitions."""
+    # Check if analyzer is initialized
+    if state_analyzer is None:
+        return jsonify({
+            'success': False,
+            'error': 'State Transition Analyzer not initialized',
+            'message': 'The analyzer failed to initialize on startup. Check server logs for details.'
+        }), 500
+    
     try:
+        logger.info("🔍 Fetching debug information for transitions...")
         debug_info = state_analyzer.get_debug_info()
         
         return jsonify({
@@ -2537,17 +2543,19 @@ def debug_transitions():
             'debug_info': debug_info,
             'help': {
                 'total_transitions_logged': 'How many transition records are saved',
-                'matrix_states': 'How many states are in the built matrix (should match unique phases)',
+                'matrix_states': 'How many states are in the built matrix',
                 'from_phases': 'Count of transitions starting from each phase',
                 'to_phases': 'Count of transitions ending in each phase',
                 'top_transitions': 'Most common phase changes',
                 'sample_transitions': 'First 5 transitions to inspect structure'
             }
         }), 200
-        
     except Exception as e:
-        logger.error(f"Error getting debug info: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        logger.error(f"❌ Error getting debug info: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 
 @app.route('/historical/status', methods=['GET'])
@@ -2670,9 +2678,6 @@ def initialize_system():
     logger.info(f"Probe sizes: {PROBE_SIZES_USD}")
     logger.info(f"Historical measurements kept: {MAX_HISTORICAL_MEASUREMENTS}")
     
-    # Start the WebSocket background thread
-    logger.info("🔧 Initializing real-time tracking system...")
-    start_websocket_background()
     # Start the WebSocket background thread
     logger.info("🔧 Initializing real-time tracking system...")
     start_websocket_background()
