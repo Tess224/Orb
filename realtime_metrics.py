@@ -1719,23 +1719,46 @@ class MetricsManager:
         distribution = self.scenario_engine.generate_distribution(current_state, projection_minutes)
     
         # Convert to dictionary for JSON serialization
-        return {
-            'token_address': distribution.token_address,
-            'current_phase': distribution.current_phase,
-            'projection_minutes': distribution.projection_minutes,
-            'volume_distribution': {
-                'p50': distribution.volume_distribution.p50,
-                'band_50': [distribution.volume_distribution.band_50_lower, distribution.volume_distribution.band_50_upper],
-                'band_90': [distribution.volume_distribution.band_90_lower, distribution.volume_distribution.band_90_upper],
-                'mean': distribution.volume_distribution.mean,
-                'confidence': distribution.volume_distribution.confidence_score
-            },
-            'vts_distribution': {
-                'p50': distribution.vts_distribution.p50,
-                'band_50': [distribution.vts_distribution.band_50_lower, distribution.vts_distribution.band_50_upper],
-                'band_90': [distribution.vts_distribution.band_90_lower, distribution.vts_distribution.band_90_upper],
-            },
-            'phase_probabilities': distribution.phase_probabilities,
-            'overall_confidence': distribution.overall_confidence,
-            'num_scenarios': distribution.num_scenarios
-        }
+            return {
+                'token_address': distribution.token_address,
+                'current_phase': distribution.current_phase,
+                'projection_minutes': distribution.projection_minutes,
+        
+                # Volume distribution
+                'volume_distribution': {
+                    'p50': distribution.volume_distribution.p50,
+                    'band_50': [distribution.volume_distribution.band_50_lower, distribution.volume_distribution.band_50_upper],
+                    'band_90': [distribution.volume_distribution.band_90_lower, distribution.volume_distribution.band_90_upper],
+                    'mean': distribution.volume_distribution.mean,
+                    'confidence': distribution.volume_distribution.confidence_score
+                },
+         
+        # VTS distribution
+                'vts_distribution': {
+                    'p50': distribution.vts_distribution.p50,
+                    'band_50': [distribution.vts_distribution.band_50_lower, distribution.vts_distribution.band_50_upper],
+                    'band_90': [distribution.vts_distribution.band_90_lower, distribution.vts_distribution.band_90_upper],
+                },
+        
+        # Phase probabilities
+                'phase_probabilities': distribution.phase_probabilities,
+        
+        # NEW: Event probabilities
+                'event_probabilities': {
+                    'volume_doubles': distribution.event_probabilities.volume_doubles,
+                    'volume_increases_50pct': distribution.event_probabilities.volume_increases_50pct,
+                    'volume_decreases_50pct': distribution.event_probabilities.volume_decreases_50pct,
+                    'any_phase_transition': distribution.event_probabilities.any_phase_transition,
+                    'transition_to_early': distribution.event_probabilities.transition_to_early,
+                    'vts_spike': distribution.event_probabilities.vts_spike,
+                    'buying_pressure_surge': distribution.event_probabilities.buying_pressure_surge,
+                    'price_pump_10pct': distribution.event_probabilities.price_pump_10pct,
+                    'price_dump_10pct': distribution.event_probabilities.price_dump_10pct
+                },
+        
+                # NEW: Human-readable summary
+                'summary': distribution.summary,
+        
+                'overall_confidence': distribution.overall_confidence,
+                'num_scenarios': distribution.num_scenarios
+           }
