@@ -1537,7 +1537,7 @@ class MetricsManager:
         self.state_analyzer = state_analyzer
         # Initialize scenario distribution engine
         from scenario_distribution import ScenarioDistributionEngine
-        self.scenario_engine = ScenarioDistributionEngine(num_scenarios=500)
+        self.scenario_engine = ScenarioDistributionEngine(num_scenarios=500, state_analyzer=self.state_analyzer)
         logger.info("🎰 Scenario distribution engine added to MetricsManager")
        
         if state_analyzer:
