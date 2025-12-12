@@ -1,5 +1,5 @@
 """
-Real-Time Metrics Calculation and Storage
+Real-Time Metrics Calculations and Storage
 This module maintains running calculations of all metrics as trades arrive.
 """
 
