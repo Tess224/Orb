@@ -772,7 +772,10 @@ class TokenMetricsTracker:
                 self._take_snapshot()
                 self.last_snapshot_time = current_time
                 logger.info(f"✅ SNAPSHOT COMPLETE")
-                
+                # Return pending transitions so MetricsManager can log them
+                if hasattr(self, 'pending_transitions') and self.pending_transitions:
+                    return self.pending_transitions
+                    
             if trade.size_usd >= 1000:
                 logger.info(
                     f"💰 Large {trade.direction.upper()}: ${trade.size_usd:,.0f} "
@@ -1436,7 +1439,36 @@ class TokenMetricsTracker:
 
         if len(self.metric_history) > 1440:
             self.metric_history.pop(0)
-        
+        # NEW CODE: Check for phase transitions
+        if len(self.metric_history) >= 2:
+            previous_snapshot = self.metric_history[-2]
+            old_phase = previous_snapshot.phase
+            new_phase = phase
+            
+            if old_phase != new_phase:
+                # Phase change detected!
+                duration = current_time - previous_snapshot.timestamp
+                
+                logger.info("=" * 70)
+                logger.info(f"🔄 PHASE TRANSITION DETECTED for {self.token_address[:8]}...")
+                logger.info(f"   FROM: {old_phase}")
+                logger.info(f"   TO:   {new_phase}")
+                logger.info(f"   Duration in {old_phase}: {duration:.0f}s ({duration/60:.1f}m)")
+                logger.info("=" * 70)
+                
+                # Try to log to state analyzer through the manager
+                # We need to pass this up to MetricsManager which has the analyzer reference
+                # For now, store the transition info in a class variable
+                if not hasattr(self, 'pending_transitions'):
+                    self.pending_transitions = []
+                
+                self.pending_transitions.append({
+                    'old_phase': old_phase,
+                    'new_phase': new_phase,
+                    'duration': duration,
+                    'snapshot': snapshot
+                })
+
         logger.debug(
             f"📸 Snapshot: {self.token_address[:8]} (age: {age_hours:.1f}h) | "
             f"Phase={phase} VTS={vts:.2f} VEI={vei:.2f} PII={pii:.2f}"
