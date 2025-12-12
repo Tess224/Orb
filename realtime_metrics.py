@@ -1535,7 +1535,11 @@ class MetricsManager:
         """
         self.trackers: Dict[str, TokenMetricsTracker] = {}
         self.state_analyzer = state_analyzer
-        
+        # Initialize scenario distribution engine
+        from scenario_distribution import ScenarioDistributionEngine
+        self.scenario_engine = ScenarioDistributionEngine(num_scenarios=500)
+        logger.info("🎰 Scenario distribution engine added to MetricsManager")
+       
         if state_analyzer:
             logger.info("📊 Metrics Manager initialized WITH state analyzer")
         else:
@@ -1667,3 +1671,71 @@ class MetricsManager:
     def get_all_tracked_tokens(self) -> List[str]:
         """Get list of all tokens currently being tracked."""
         return list(self.trackers.keys())
+
+    def generate_scenario_distribution(self, token_address: str, projection_minutes: int = 15) -> Optional[Dict]:
+        """
+        Generate probabilistic predictions for a token's future state.
+    
+        Args:
+            token_address: Token to generate predictions for
+            projection_minutes: How far ahead to predict (default 15 minutes)
+        
+        Returns:
+            Dictionary with probability distributions, or None if token not tracked
+        """
+        if token_address not in self.trackers:
+            logger.warning(f"Cannot generate distribution for untracked token {token_address[:8]}...")
+            return None
+    
+        tracker = self.trackers[token_address]
+        current_metrics = tracker.get_current_metrics()
+    
+        if not current_metrics:
+            logger.warning(f"No current metrics available for {token_address[:8]}...")
+            return None
+    
+        # Prepare current state for scenario engine
+        current_state = {
+            'token_address': token_address,
+            'phase': current_metrics.phase,
+            'vts': current_metrics.vts,
+            'pii': current_metrics.pii,
+            'bsr': current_metrics.bsr_1h,
+            'volume_1h': current_metrics.volume_1h,
+            'vlr': current_metrics.vlr_1h,
+            'liquidity_usd': current_metrics.liquidity_usd
+        }
+    
+        # Load historical snapshots for pattern matching
+        historical_snapshots = tracker.get_historical_snapshots(lookback_minutes=1440)  # Last 24 hours
+    
+        if len(historical_snapshots) < 10:
+            logger.warning(f"Only {len(historical_snapshots)} historical snapshots - need more data for reliable predictions")
+        # Still try to generate, but confidence will be low
+    
+        self.scenario_engine.load_historical_data(historical_snapshots)
+    
+        # Generate the distribution
+        distribution = self.scenario_engine.generate_distribution(current_state, projection_minutes)
+    
+        # Convert to dictionary for JSON serialization
+        return {
+            'token_address': distribution.token_address,
+            'current_phase': distribution.current_phase,
+            'projection_minutes': distribution.projection_minutes,
+            'volume_distribution': {
+                'p50': distribution.volume_distribution.p50,
+                'band_50': [distribution.volume_distribution.band_50_lower, distribution.volume_distribution.band_50_upper],
+                'band_90': [distribution.volume_distribution.band_90_lower, distribution.volume_distribution.band_90_upper],
+                'mean': distribution.volume_distribution.mean,
+                'confidence': distribution.volume_distribution.confidence_score
+            },
+            'vts_distribution': {
+                'p50': distribution.vts_distribution.p50,
+                'band_50': [distribution.vts_distribution.band_50_lower, distribution.vts_distribution.band_50_upper],
+                'band_90': [distribution.vts_distribution.band_90_lower, distribution.vts_distribution.band_90_upper],
+            },
+            'phase_probabilities': distribution.phase_probabilities,
+            'overall_confidence': distribution.overall_confidence,
+            'num_scenarios': distribution.num_scenarios
+        }
