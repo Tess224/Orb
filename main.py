@@ -2634,7 +2634,52 @@ def historical_data_status():
             'error': str(e),
             'status': 'error'
         }), 500
+@app.route('/scenarios/distribution/<token_address>', methods=['GET'])
+def get_scenario_distribution(token_address: str):
+    """
+    Get probabilistic predictions for a token using Monte Carlo simulation.
+    
+    Query parameters:
+        projection_minutes: How far ahead to predict (default 15, max 60)
+    
+    Returns probability ranges instead of single-point predictions.
+    """
+    try:
+        if not metrics_manager:
+            return jsonify({
+                'error': 'Metrics system not initialized',
+                'status': 'error'
+            }), 503
         
+        # Get projection time from query params
+        projection_minutes = int(request.args.get('projection_minutes', 15))
+        projection_minutes = min(60, max(5, projection_minutes))  # Cap between 5-60 minutes
+        
+        logger.info(f"🎲 Generating scenario distribution for {token_address[:8]}... ({projection_minutes}min)")
+        
+        distribution = metrics_manager.generate_scenario_distribution(token_address, projection_minutes)
+        
+        if not distribution:
+            return jsonify({
+                'error': f'Token {token_address[:8]}... not being tracked or insufficient data',
+                'status': 'not_found'
+            }), 404
+        
+        return jsonify({
+            'success': True,
+            'distribution': distribution,
+            'timestamp': int(time.time())
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error generating scenario distribution: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'error': str(e),
+            'status': 'error'
+        }), 500
+
 # ============================================================================
 # INITIALIZATION - This runs when Gunicorn imports the file
 # ============================================================================
