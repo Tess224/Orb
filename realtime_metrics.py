@@ -1493,12 +1493,33 @@ class MetricsManager:
     It maintains a tracker for each token and routes trade data to the
     appropriate tracker.
     """
-    
-    def __init__(self):
-        """Initialize the metrics manager."""
+
+    def __init__(self, state_analyzer=None):
+        """
+        Initialize the metrics manager.
+        
+        Args:
+            state_analyzer: Optional StateTransitionAnalyzer instance for logging phase changes
+        """
         self.trackers: Dict[str, TokenMetricsTracker] = {}
-        logger.info("📊 Metrics Manager initialized")
+        self.state_analyzer = state_analyzer
+        
+        if state_analyzer:
+            logger.info("📊 Metrics Manager initialized WITH state analyzer")
+        else:
+            logger.info("📊 Metrics Manager initialized WITHOUT state analyzer")
+            logger.info("   (Phase transitions will not be logged until analyzer is connected)")
     
+    def set_state_analyzer(self, state_analyzer):
+        """
+        Connect the state analyzer after MetricsManager initialization.
+        
+        Args:
+            state_analyzer: StateTransitionAnalyzer instance
+        """
+        self.state_analyzer = state_analyzer
+        logger.info("🔗 State analyzer connected to MetricsManager")
+
     
     def add_token(self, token_address: str, liquidity_usd: float, market_cap_usd: Optional[float] = None):
         """
