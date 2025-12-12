@@ -1685,7 +1685,7 @@ def run_websocket_loop(api_key: str):
         websocket_client = HeliusWebSocketClient(api_key)
 
         # Create the metrics manager
-        metrics_manager = MetricsManager()
+        metrics_manager = MetricsManager(state_analyzer=None)
 
         # Connect the two: when WebSocket gets trade data, send it to metrics manager
         websocket_client.add_trade_callback(metrics_manager.handle_trade)
@@ -2677,6 +2677,13 @@ def initialize_state_analyzer():
         logger.info("=" * 70)
         logger.info("✅ STATE TRANSITION ANALYZER INITIALIZED SUCCESSFULLY")
         logger.info("=" * 70)
+       
+        # NEW: Connect state analyzer to metrics manager
+        if metrics_manager:
+            metrics_manager.set_state_analyzer(state_analyzer)
+            logger.info("🔗 Connected state analyzer to MetricsManager")
+        else:
+            logger.warning("⚠️ MetricsManager not available yet - will connect on first use")
 
     except ImportError as e:
         logger.error("=" * 70)
@@ -2717,10 +2724,25 @@ def initialize_system():
     # Start the WebSocket background thread
     logger.info("🔧 Initializing real-time tracking system...")
     start_websocket_background()
+
+    # Give WebSocket thread time to fully initialize
+    time.sleep(3)
     
     # NEW CODE: Initialize state transition analyzer
     logger.info("🔧 Initializing state transition analyzer...")
     initialize_state_analyzer()
+    # Double-check connection with a small delay to handle race conditions
+    time.sleep(1)
+    
+    if metrics_manager and state_analyzer:
+        metrics_manager.set_state_analyzer(state_analyzer)
+        logger.info("🔗 Final connection check: State analyzer connected to MetricsManager")
+    else:
+        if not metrics_manager:
+            logger.error("❌ MetricsManager not initialized!")
+        if not state_analyzer:
+            logger.error("❌ State analyzer not initialized!")
+    
     
     logger.info("=" * 70)
 
