@@ -1761,4 +1761,4 @@ class MetricsManager:
         
                 'overall_confidence': distribution.overall_confidence,
                 'num_scenarios': distribution.num_scenarios
-           }
+            }
