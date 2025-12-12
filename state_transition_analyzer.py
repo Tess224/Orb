@@ -82,6 +82,17 @@ class StateTransitionAnalyzer:
             logger.info(f"💾 Saved transition matrix to {self.matrix_file}")
         except Exception as e:
             logger.error(f"❌ Error saving transition matrix: {e}")
+
+    def save_matrix(self):
+        """
+        Public method to save the transition matrix.
+        
+        This is called by external code (like the build-transitions endpoint)
+        when it needs to save the matrix after building it. It's a simple
+        wrapper around the internal _save_matrix() method.
+        """
+        self._save_matrix()
+        logger.info("💾 Transition matrix saved via public method")
     
     def log_transition(self, token_address: str, from_phase: str, to_phase: str, 
                       metrics: dict, duration_seconds: float):
