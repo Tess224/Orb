@@ -2,7 +2,7 @@
 Real-Time Transaction Streaming using Helius WebSocket
 
 MAJOR CHANGE FROM ORIGINAL:
-- Now uses logsSubscribe instead of accountSubscribe
+- Now uses logsSubsscribe instead of accountSubscribe
 - Fetches full transaction data when we receive notifications
 - This gives us the actual trade details we need for parsing
 """
