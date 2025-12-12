@@ -43,7 +43,8 @@ class StateTransitionAnalyzer:
         self.transition_counts = defaultdict(lambda: defaultdict(int))
         self.confidence_score = 0.0
         self.total_transitions = 0
-        
+        self.observation_counts = {}  # NEW: Track how many observations per state
+                     
         logger.info("🔧 Initializing state transition analyzer...")
         self._load_matrix()
         logger.info("🧠 State Transition Analyzer initialized")
@@ -57,6 +58,7 @@ class StateTransitionAnalyzer:
                     self.transition_matrix = data.get('matrix', {})
                     self.confidence_score = data.get('confidence', 0.0)
                     self.total_transitions = data.get('total_transitions', 0)
+                    self.observation_counts = data.get('observation_counts', {})  # NEW
                     logger.info(f"✅ Loaded transition matrix with {len(self.transition_matrix)} states")
                     logger.info(f"   Confidence: {self.confidence_score:.1%}, Total transitions: {self.total_transitions}")
             except Exception as e:
@@ -74,6 +76,7 @@ class StateTransitionAnalyzer:
                 'matrix': self.transition_matrix,
                 'confidence': self.confidence_score,
                 'total_transitions': self.total_transitions,
+                'observation_counts': self.observation_counts, 
                 'last_updated': datetime.utcnow().isoformat(),
                 'states': list(self.transition_matrix.keys())
             }
@@ -264,6 +267,12 @@ class StateTransitionAnalyzer:
         self.transition_matrix = matrix
         self.confidence_score = confidence
         self.total_transitions = valid_transitions
+        # NEW: Populate observation counts for each state
+        self.observation_counts = {}
+        for from_state, to_states in transition_counts.items():
+            total = sum(to_states.values())
+            self.observation_counts[from_state] = total
+        
         self._save_matrix()
         
         logger.info(f"✅ Built transition matrix with {len(matrix)} states")
