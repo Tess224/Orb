@@ -1719,7 +1719,7 @@ class MetricsManager:
         distribution = self.scenario_engine.generate_distribution(current_state, projection_minutes)
     
         # Convert to dictionary for JSON serialization
-            return {
+        return {
                 'token_address': distribution.token_address,
                 'current_phase': distribution.current_phase,
                 'projection_minutes': distribution.projection_minutes,
@@ -1761,4 +1761,4 @@ class MetricsManager:
         
                 'overall_confidence': distribution.overall_confidence,
                 'num_scenarios': distribution.num_scenarios
-            }
+        }
