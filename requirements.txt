@@ -6,3 +6,4 @@ solana==0.36.10
 solders==0.25.0
 websockets
 aiohttp
+numpy>=1.24.0
