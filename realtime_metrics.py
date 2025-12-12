@@ -1583,13 +1583,11 @@ class MetricsManager:
     def handle_trade(self, trade_data: Dict):
         """
         Route incoming trade data to the appropriate tracker.
-    
-        Enhanced with detailed error logging to catch any issues from our
-        new conviction-weighted pressure calculations.
+        Now also processes phase transitions and logs them to state analyzer.
         """
         try:
             logger.info(f"🎯 MetricsManager received trade: {trade_data.get('size_usd', 0):.2f} USD")
-    
+
             token_address = trade_data.get('token_address')
 
             if not token_address:
@@ -1598,14 +1596,51 @@ class MetricsManager:
 
             if token_address in self.trackers:
                 try:
-                    self.trackers[token_address].add_trade(trade_data)
+                    # Process the trade
+                    pending_transitions = self.trackers[token_address].add_trade(trade_data)
+                    
+                    # If there are pending transitions, log them to state analyzer
+                    if pending_transitions and self.state_analyzer:
+                        for transition in pending_transitions:
+                            try:
+                                snapshot = transition['snapshot']
+                                
+                                # Prepare metrics dict for state analyzer
+                                metrics_dict = {
+                                    'bsr': snapshot.bsr_1h,
+                                    'vlr': snapshot.vlr_1h,
+                                    'pii': snapshot.pii,
+                                    'vts': snapshot.vts,
+                                    'vei': snapshot.vei,
+                                    'token_age_hours': snapshot.token_age_hours
+                                }
+                                
+                                self.state_analyzer.log_transition(
+                                    token_address=token_address,
+                                    from_phase=transition['old_phase'],
+                                    to_phase=transition['new_phase'],
+                                    metrics=metrics_dict,
+                                    duration_seconds=transition['duration']
+                                )
+                                
+                                logger.info(f"✅ Transition logged to state analyzer")
+                                
+                            except Exception as log_error:
+                                logger.error(f"❌ Error logging transition: {log_error}")
+                        
+                        # Clear pending transitions after logging
+                        self.trackers[token_address].pending_transitions = []
+                    
+                    elif pending_transitions and not self.state_analyzer:
+                        logger.warning("⚠️ Phase transition detected but state analyzer not connected")
+                        
                 except Exception as trade_error:
                     logger.error(f"❌ Error processing trade for {token_address[:8]}: {trade_error}")
                     import traceback
                     logger.error(f"   Traceback: {traceback.format_exc()}")
             else:
                 logger.debug(f"ℹ️ Received trade for untracked token {token_address[:8]}...")
-            
+
         except Exception as e:
             logger.error(f"❌ Critical error in handle_trade: {e}")
             import traceback
