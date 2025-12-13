@@ -2681,6 +2681,71 @@ def get_scenario_distribution(token_address: str):
             'status': 'error'
         }), 500
 
+@app.route('/signal/fused/<token_address>', methods=['GET'])
+def get_fused_signal(token_address: str):
+    """
+    Get fused signal combining real-time metrics and slippage analysis.
+    Both systems must agree for high confidence signals.
+    """
+    try:
+        logger.info(f"🔗 Fused signal request for {token_address[:8]}...")
+        
+        # Get real-time metrics if available
+        metrics_snapshot = None
+        if metrics_manager:
+            metrics_snapshot = metrics_manager.get_metrics(token_address)
+        
+        # Get slippage analysis from cache or run fresh
+        slippage_analysis = None
+        if token_address in analysis_cache:
+            cached = analysis_cache[token_address]
+            cache_age = time.time() - cached['timestamp']
+            if cache_age < 300:  # 5 minutes
+                slippage_analysis = cached['result']
+        
+        # If no cache, run fresh slippage analysis
+        if not slippage_analysis:
+            try:
+                liq_data = get_token_liquidity_simple(token_address)
+                velocity_analysis = analyze_velocity(liq_data['liquidity_usd'], liq_data['volume_24h_usd'])
+                slippage_data = probe_slippage_curve(token_address)
+                analysis = analyze_slippage_patterns(slippage_data, token_address)
+                slippage_analysis = classify_market_state(analysis)
+                slippage_analysis['velocity'] = velocity_analysis
+                slippage_analysis['slippage_data'] = {
+                    'baseline_price': slippage_data['baseline_price'],
+                    'asymmetry': analysis['asymmetry'],
+                    'buy_slippage': slippage_data.get('buy_slippage', []),
+                    'sell_slippage': slippage_data.get('sell_slippage', [])
+                }
+                analysis_cache[token_address] = {
+                    'result': slippage_analysis,
+                    'timestamp': time.time()
+                }
+            except Exception as e:
+                logger.error(f"Slippage analysis failed: {e}")
+                slippage_analysis = None
+        
+        # Fuse the signals
+        fused = signal_fusion.fuse_signals(token_address, metrics_snapshot, slippage_analysis)
+        
+        logger.info(f"🎯 Fused: {fused.direction.value} ({fused.confidence:.0%}) - {fused.action_code}")
+        
+        return jsonify({
+            'success': True,
+            'signal': fused.to_dict(),
+            'data_sources': {
+                'metrics_available': metrics_snapshot is not None,
+                'slippage_available': slippage_analysis is not None
+            },
+            'timestamp': int(time.time())
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error generating fused signal: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 # ============================================================================
 # INITIALIZATION - This runs when Gunicorn imports the file
 # ============================================================================
