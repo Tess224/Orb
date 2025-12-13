@@ -110,6 +110,14 @@ class FusedSignal:
     # Metadata
     token_address: str = ""
     timestamp: float = 0.0
+    # ADD THESE NEW FIELDS RIGHT HERE, after timestamp but before to_dict method:
+    # Data maturity indicators - tell users about prediction reliability
+    data_maturity: str = "unknown"  # Will be: insufficient, preliminary, reliable, mature
+    maturity_confidence: float = 0.0  # Confidence score from data maturity (0 to 1)
+    tracking_duration_minutes: float = 0  # How long we've been tracking this token
+    total_transitions: int = 0  # How many phase transitions we've observed
+    warnings: List[str] = field(default_factory=list)  # User-facing warning messages
+
     
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization."""
@@ -146,6 +154,12 @@ class FusedSignal:
             } if self.slippage_signal else None,
             'token_address': self.token_address,
             'timestamp': self.timestamp
+            # ADD THESE NEW FIELDS right before the closing brace:
+            'data_maturity': self.data_maturity,
+            'maturity_confidence': round(self.maturity_confidence, 3),
+            'tracking_duration_minutes': round(self.tracking_duration_minutes, 1),
+            'total_transitions': self.total_transitions,
+            'warnings': self.warnings
         }
 
 
@@ -491,19 +505,20 @@ class SignalFusion:
             return self._create_insufficient_data_signal(token_address)
         
         if not metrics_signal:
-            return self._create_single_source_signal(token_address, None, slippage_signal, "metrics")
+            return self._create_single_source_signal(token_address, None, slippage_signal, "metrics", metrics_snapshot)
         
         if not slippage_signal:
-            return self._create_single_source_signal(token_address, metrics_signal, None, "slippage")
+            return self._create_single_source_signal(token_address, metrics_signal, None, "slippage", metrics_snapshot)
         
         # Both signals available - do full fusion
-        return self._fuse_both_signals(token_address, metrics_signal, slippage_signal)
+        return self._fuse_both_signals(token_address, metrics_signal, slippage_signal, metrics_snapshot)
     
     def _fuse_both_signals(
         self,
         token_address: str,
         metrics_signal: MetricsSignal,
-        slippage_signal: SlippageSignal
+        slippage_signal: SlippageSignal,
+        metrics_snapshot
     ) -> FusedSignal:
         """
         Perform full fusion when both signals are available.
@@ -539,7 +554,53 @@ class SignalFusion:
         disagreement_reason = None
         if not systems_agree:
             disagreement_reason = self._explain_disagreement(metrics_signal, slippage_signal)
-        
+        # ADD THIS NEW SECTION right here, before creating the FusedSignal:
+        # Extract data maturity information from the metrics snapshot
+        # The metrics snapshot knows how much historical data we have
+        data_maturity = "unknown"
+        maturity_confidence = 0.0
+        tracking_duration = 0
+        total_transitions = 0
+        warnings = []
+
+        if metrics_snapshot:
+        # Pull the maturity data from the snapshot if it exists
+        # We use hasattr to safely check for these fields in case they don't exist yet
+        if hasattr(metrics_snapshot, 'data_maturity_level'):
+            data_maturity = metrics_snapshot.data_maturity_level
+        if hasattr(metrics_snapshot, 'confidence_score'):
+            maturity_confidence = metrics_snapshot.confidence_score
+        if hasattr(metrics_snapshot, 'token_age_minutes'):
+            tracking_duration = metrics_snapshot.token_age_minutes
+        if hasattr(metrics_snapshot, 'total_transitions_observed'):
+            total_transitions = metrics_snapshot.total_transitions_observed
+    
+    # Generate user-facing warnings based on maturity level
+        if data_maturity == "insufficient":
+            warnings.append(
+                f"⚠️ INSUFFICIENT DATA: Token tracked for only {int(tracking_duration)}m "
+                f"with {total_transitions} phase transitions. Predictions are highly speculative. "
+                f"Reliable analysis requires 2+ hours and 10+ transitions."
+            )
+        elif data_maturity == "preliminary":
+            transitions_needed = 10 - total_transitions
+            warnings.append(
+                f"⚠️ LIMITED DATA: Only {total_transitions} transitions observed over {int(tracking_duration)}m. "
+                f"Predictions are developing but not yet statistically significant. "
+                f"Need {transitions_needed} more transitions for reliable analysis."
+            )
+        elif data_maturity == "reliable":
+            warnings.append(
+                f"ℹ️ Good data quality: {total_transitions} transitions observed over {int(tracking_duration / 60):.1f}h. "
+                f"Predictions are statistically significant and backed by solid historical patterns."
+            )
+    # If data_maturity is "mature" (30+ transitions), we don't add any warning
+
+    
+    # Check if metrics_signal has the maturity attributes we need
+    # We need to access the underlying MetricsSnapshot, not the MetricsSignal
+    # So we'll need to pass this through - for now, we'll set defaults
+    # and update this in Step 4
         return FusedSignal(
             direction=fused_direction,
             confidence=fused_confidence,
@@ -554,7 +615,13 @@ class SignalFusion:
             risk_level=risk_level,
             risk_factors=risk_factors,
             token_address=token_address,
-            timestamp=time.time()
+            timestamp=time.time(),
+            # ADD these new parameters to the FusedSignal creation:
+            data_maturity=data_maturity,
+            maturity_confidence=maturity_confidence,
+            tracking_duration_minutes=tracking_duration,
+            total_transitions=total_transitions,
+            warnings=warnings
         )
     
     def _calculate_agreement(
@@ -931,9 +998,45 @@ class SignalFusion:
         token_address: str,
         metrics_signal: Optional[MetricsSignal],
         slippage_signal: Optional[SlippageSignal],
-        missing_source: str
+        missing_source: str,
+        metrics_snapshot=None
     ) -> FusedSignal:
         """Create a signal when only one source is available."""
+        # ADD THIS ENTIRE BLOCK right here at the start:
+        # Extract maturity data if we have a metrics snapshot
+        data_maturity = "unknown"
+        maturity_confidence = 0.0
+        tracking_duration = 0
+        total_transitions = 0
+        warnings = []
+    
+        if metrics_snapshot:
+        # We have metrics snapshot - extract maturity information
+            if hasattr(metrics_snapshot, 'data_maturity_level'):
+                data_maturity = metrics_snapshot.data_maturity_level
+            if hasattr(metrics_snapshot, 'confidence_score'):
+                maturity_confidence = metrics_snapshot.confidence_score
+            if hasattr(metrics_snapshot, 'token_age_minutes'):
+                tracking_duration = metrics_snapshot.token_age_minutes
+            if hasattr(metrics_snapshot, 'total_transitions_observed'):
+                total_transitions = metrics_snapshot.total_transitions_observed
+        
+        # Generate warnings based on maturity
+            if data_maturity == "insufficient":
+                warnings.append(
+                    f"⚠️ INSUFFICIENT DATA: Only {total_transitions} transitions in {int(tracking_duration)}m. "
+                    f"Predictions highly speculative. Need 10+ transitions for reliability."
+                )
+            elif data_maturity == "preliminary":
+                warnings.append(
+                    f"⚠️ LIMITED DATA: {total_transitions} transitions observed. "
+                    f"Need {10 - total_transitions} more for statistical significance."
+                )
+            elif data_maturity == "reliable":
+                warnings.append(
+                    f"ℹ️ {total_transitions} transitions observed - statistically significant data."
+                )
+            
         if metrics_signal:
             # Only metrics available
             return FusedSignal(
@@ -950,7 +1053,12 @@ class SignalFusion:
                 risk_level="medium",
                 risk_factors=["Missing slippage analysis - liquidity structure unknown"],
                 token_address=token_address,
-                timestamp=time.time()
+                timestamp=time.time(),
+                data_maturity=data_maturity,
+                maturity_confidence=maturity_confidence,
+                tracking_duration_minutes=tracking_duration,
+                total_transitions=total_transitions,
+                warnings=warnings
             )
         else:
             # Only slippage available
@@ -968,7 +1076,12 @@ class SignalFusion:
                 risk_level="medium" if not slippage_signal.is_honeypot else "extreme",
                 risk_factors=["Missing real-time metrics - current momentum unknown"],
                 token_address=token_address,
-                timestamp=time.time()
+                timestamp=time.time(),
+                data_maturity="unknown",
+                maturity_confidence=0.0,
+                tracking_duration_minutes=0,
+                total_transitions=0,
+                warnings=["⚠️ No real-time metrics available - cannot assess data maturity"]
             )
 
 
