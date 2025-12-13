@@ -2243,20 +2243,36 @@ def analyze_wallet():
 def tracking_status():
     """
     Check if real-time tracking is working and see which tokens are tracked.
-    
-    Use this to verify your WebSocket is connected and working.
     """
+    logger.info("=" * 70)
+    logger.info("📊 TRACKING STATUS ENDPOINT CALLED")
+    logger.info("=" * 70)
+    
     try:
+        # Log the actual object ID of metrics_manager we're seeing
+        logger.info(f"metrics_manager is None: {metrics_manager is None}")
+        if metrics_manager:
+            logger.info(f"metrics_manager object ID: {id(metrics_manager)}")
+            logger.info(f"metrics_manager.trackers keys: {list(metrics_manager.trackers.keys())}")
+            logger.info(f"Number of items in trackers dict: {len(metrics_manager.trackers)}")
+            
+            # Try to peek inside the trackers dictionary directly
+            for token_addr, tracker in metrics_manager.trackers.items():
+                logger.info(f"  Found tracker for: {token_addr[:8]}...")
+        
         status = {
+            'success': True,
             'websocket_active': websocket_client is not None,
             'metrics_manager_active': metrics_manager is not None,
             'tracked_tokens': [],
             'websocket_stats': None,
             'timestamp': int(time.time())
         }
-        
+
         if metrics_manager:
             tracked = metrics_manager.get_all_tracked_tokens()
+            logger.info(f"get_all_tracked_tokens() returned: {tracked}")
+            
             status['tracked_tokens'] = [
                 {
                     'token_address': addr,
@@ -2266,16 +2282,18 @@ def tracking_status():
             ]
             status['tracked_count'] = len(tracked)
         
-        if websocket_client:
-            status['websocket_stats'] = websocket_client.get_stats()
+        logger.info(f"Returning response with {status.get('tracked_count', 0)} tracked tokens")
+        logger.info("=" * 70)
         
         return jsonify(status), 200
-        
+
     except Exception as e:
-        logger.error(f"❌ Error getting tracking status: {e}")
+        logger.error(f"❌ Error in tracking_status: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({
-            'error': str(e),
-            'status': 'error'
+            'success': False,
+            'error': str(e)
         }), 500
 
 
@@ -2341,6 +2359,12 @@ def start_tracking():
         
         # Start tracking
         success = start_tracking_token_realtime(
+            logger.info("=" * 70)
+            logger.info("📊 AFTER START_TRACKING_TOKEN_REALTIME")
+            logger.info(f"metrics_manager object ID: {id(metrics_manager)}")
+            logger.info(f"metrics_manager.trackers keys: {list(metrics_manager.trackers.keys())}")
+            logger.info("=" * 70) 
+            
             token_address,
             pool_address,
             liq_data['liquidity_usd']
