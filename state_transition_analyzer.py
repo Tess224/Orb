@@ -1,5 +1,5 @@
 """
-State Transition Analysis System
+State Transition Analysis Systems
 
 This module processes historical snapshot data to calculate transition probablities.
 It answers questions like: "Given that a token is currently in early phase with high VTS,
