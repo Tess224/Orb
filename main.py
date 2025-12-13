@@ -2270,6 +2270,13 @@ def tracking_status():
         }
 
         if metrics_manager:
+            # Debug logging - see what MetricsManager looks like when queried
+            logger.info("=" * 70)
+            logger.info("📊 DEBUG: In tracking_status endpoint")
+            logger.info(f"MetricsManager object ID: {id(metrics_manager)}")
+            logger.info(f"Trackers before get_all: {list(metrics_manager.trackers.keys())}")
+            logger.info("=" * 70)
+            
             tracked = metrics_manager.get_all_tracked_tokens()
             logger.info(f"get_all_tracked_tokens() returned: {tracked}")
             
@@ -2359,17 +2366,23 @@ def start_tracking():
         
         # Start tracking
         success = start_tracking_token_realtime(
-            logger.info("=" * 70)
-            logger.info("📊 AFTER START_TRACKING_TOKEN_REALTIME")
-            logger.info(f"metrics_manager object ID: {id(metrics_manager)}")
-            logger.info(f"metrics_manager.trackers keys: {list(metrics_manager.trackers.keys())}")
-            logger.info("=" * 70) 
-            
             token_address,
             pool_address,
             liq_data['liquidity_usd']
         )
-        
+        # Debug logging - see what MetricsManager looks like right after tracking started
+        logger.info("=" * 70)
+        logger.info("📊 DEBUG: After start_tracking_token_realtime")
+        logger.info(f"Success flag returned: {success}")
+        if metrics_manager:
+            logger.info(f"MetricsManager object ID: {id(metrics_manager)}")
+            logger.info(f"Trackers in manager: {list(metrics_manager.trackers.keys())}")
+            logger.info(f"Number of trackers: {len(metrics_manager.trackers)}")
+        else:
+            logger.info("MetricsManager is None!")
+        logger.info("=" * 70)
+
+
         if success:
             increment_usage(access_code)
             return jsonify({
