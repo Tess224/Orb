@@ -564,36 +564,36 @@ class SignalFusion:
         warnings = []
 
         if metrics_snapshot:
-        # Pull the maturity data from the snapshot if it exists
-        # We use hasattr to safely check for these fields in case they don't exist yet
-        if hasattr(metrics_snapshot, 'data_maturity_level'):
-            data_maturity = metrics_snapshot.data_maturity_level
-        if hasattr(metrics_snapshot, 'confidence_score'):
-            maturity_confidence = metrics_snapshot.confidence_score
-        if hasattr(metrics_snapshot, 'token_age_minutes'):
-            tracking_duration = metrics_snapshot.token_age_minutes
-        if hasattr(metrics_snapshot, 'total_transitions_observed'):
-            total_transitions = metrics_snapshot.total_transitions_observed
+            # Pull the maturity data from the snapshot if it exists
+            # We use hasattr to safely check for these fields in case they don't exist yet
+            if hasattr(metrics_snapshot, 'data_maturity_level'):
+                data_maturity = metrics_snapshot.data_maturity_level
+            if hasattr(metrics_snapshot, 'confidence_score'):
+                maturity_confidence = metrics_snapshot.confidence_score
+            if hasattr(metrics_snapshot, 'token_age_minutes'):
+                tracking_duration = metrics_snapshot.token_age_minutes
+            if hasattr(metrics_snapshot, 'total_transitions_observed'):
+                total_transitions = metrics_snapshot.total_transitions_observed
     
     # Generate user-facing warnings based on maturity level
-        if data_maturity == "insufficient":
-            warnings.append(
-                f"⚠️ INSUFFICIENT DATA: Token tracked for only {int(tracking_duration)}m "
-                f"with {total_transitions} phase transitions. Predictions are highly speculative. "
-                f"Reliable analysis requires 2+ hours and 10+ transitions."
-            )
-        elif data_maturity == "preliminary":
-            transitions_needed = 10 - total_transitions
-            warnings.append(
-                f"⚠️ LIMITED DATA: Only {total_transitions} transitions observed over {int(tracking_duration)}m. "
-                f"Predictions are developing but not yet statistically significant. "
-                f"Need {transitions_needed} more transitions for reliable analysis."
-            )
-        elif data_maturity == "reliable":
-            warnings.append(
-                f"ℹ️ Good data quality: {total_transitions} transitions observed over {int(tracking_duration / 60):.1f}h. "
-                f"Predictions are statistically significant and backed by solid historical patterns."
-            )
+            if data_maturity == "insufficient":
+                warnings.append(
+                    f"⚠️ INSUFFICIENT DATA: Token tracked for only {int(tracking_duration)}m "
+                    f"with {total_transitions} phase transitions. Predictions are highly speculative. "
+                    f"Reliable analysis requires 2+ hours and 10+ transitions."
+                )
+            elif data_maturity == "preliminary":
+                transitions_needed = 10 - total_transitions
+                warnings.append(
+                    f"⚠️ LIMITED DATA: Only {total_transitions} transitions observed over {int(tracking_duration)}m. "
+                    f"Predictions are developing but not yet statistically significant. "
+                    f"Need {transitions_needed} more transitions for reliable analysis."
+                )
+            elif data_maturity == "reliable":
+                warnings.append(
+                    f"ℹ️ Good data quality: {total_transitions} transitions observed over {int(tracking_duration / 60):.1f}h. "
+                    f"Predictions are statistically significant and backed by solid historical patterns."
+                )
     # If data_maturity is "mature" (30+ transitions), we don't add any warning
 
     
