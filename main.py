@@ -20,6 +20,7 @@ from solders.pubkey import Pubkey
 from solders.signature import Signature
 from realtime_data_collector import HeliusWebSocketClient
 from realtime_metrics import MetricsManager, MetricsSnapshot
+from signal_fusion import signal_fusion, FusedSignal, SignalDirection, SignalUrgency
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
