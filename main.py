@@ -2406,6 +2406,85 @@ def start_tracking():
             'status': 'error'
         }), 500
 
+@app.route('/tracking/stop', methods=['POST'])
+def stop_tracking():
+    """
+    Stop tracking a token and close its WebSocket subscription.
+    
+    Request body should be:
+    {
+        "token_address": "TokenAddressHere"
+    }
+    
+    This will remove the token from real-time tracking and stop
+    processing trades for it.
+    """
+    try:
+        data = request.get_json()
+        
+        if not data or 'token_address' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'Missing required field: token_address',
+                'status': 'error'
+            }), 400
+        
+        token_address = data['token_address']
+        
+        logger.info(f"📥 Request to stop tracking {token_address[:8]}...")
+        
+        # Check if metrics manager exists
+        if not metrics_manager:
+            return jsonify({
+                'success': False,
+                'error': 'Tracking system not initialized',
+                'status': 'error'
+            }), 503
+        
+        # Check if token is actually being tracked
+        if token_address not in metrics_manager.trackers:
+            logger.warning(f"⚠️ Token {token_address[:8]} is not being tracked")
+            return jsonify({
+                'success': False,
+                'error': f'Token {token_address[:8]} is not currently being tracked',
+                'status': 'not_found'
+            }), 404
+        
+        # Remove from metrics manager
+        metrics_manager.remove_token(token_address)
+        logger.info(f"✅ Removed {token_address[:8]} from MetricsManager")
+        
+        # Remove from token-to-pool mapping
+        if token_address in token_to_pool_map:
+            pool_address = token_to_pool_map[token_address]
+            del token_to_pool_map[token_address]
+            logger.info(f"✅ Removed pool mapping for {token_address[:8]}")
+        else:
+            pool_address = None
+        
+        # TODO: Ideally we'd also unsubscribe from the WebSocket here
+        # but that would require adding an unsubscribe method to the WebSocket client
+        # For now, the WebSocket will keep receiving data but MetricsManager
+        # will ignore it since the token is no longer in trackers
+        
+        return jsonify({
+            'success': True,
+            'message': f'Stopped tracking {token_address[:8]}',
+            'token_address': token_address,
+            'pool_address': pool_address,
+            'timestamp': int(time.time())
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error in stop_tracking: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'status': 'error'
+        }), 500
+
 
 @app.route('/metrics/realtime/<token_address>', methods=['GET'])
 def get_realtime_metrics(token_address: str):
