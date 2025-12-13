@@ -153,7 +153,7 @@ class FusedSignal:
                 'key_factors': self.slippage_signal.key_factors
             } if self.slippage_signal else None,
             'token_address': self.token_address,
-            'timestamp': self.timestamp
+            'timestamp': self.timestamp,
             # ADD THESE NEW FIELDS right before the closing brace:
             'data_maturity': self.data_maturity,
             'maturity_confidence': round(self.maturity_confidence, 3),
