@@ -2681,35 +2681,68 @@ def get_scenario_distribution(token_address: str):
             'status': 'error'
         }), 500
 
+# ============================================
+# SIGNAL FUSION ENDPOINTS
+# ============================================
+
 @app.route('/signal/fused/<token_address>', methods=['GET'])
 def get_fused_signal(token_address: str):
     """
     Get fused signal combining real-time metrics and slippage analysis.
-    Both systems must agree for high confidence signals.
+    
+    This is your primary trading signal endpoint. It combines both detection
+    systems into a single, high-confidence assessment.
+    
+    Query params:
+        force_refresh: 'true' to force fresh slippage analysis (slower but current)
+    
+    Returns:
+        Complete fused signal with direction, confidence, action, risk assessment
     """
     try:
+        force_refresh = request.args.get('force_refresh', 'false').lower() == 'true'
         logger.info(f"🔗 Fused signal request for {token_address[:8]}...")
         
-        # Get real-time metrics if available
+        # Get real-time metrics if token is being tracked
         metrics_snapshot = None
         if metrics_manager:
             metrics_snapshot = metrics_manager.get_metrics(token_address)
+            if metrics_snapshot:
+                logger.info(f"  ✓ Real-time metrics available (phase: {metrics_snapshot.phase})")
+            else:
+                logger.info(f"  ℹ️ No real-time metrics - token not being tracked")
         
         # Get slippage analysis from cache or run fresh
         slippage_analysis = None
-        if token_address in analysis_cache:
+        
+        # Check cache first unless force refresh
+        if not force_refresh and token_address in analysis_cache:
             cached = analysis_cache[token_address]
             cache_age = time.time() - cached['timestamp']
             if cache_age < 300:  # 5 minutes
                 slippage_analysis = cached['result']
+                logger.info(f"  ✓ Using cached slippage analysis ({cache_age:.0f}s old)")
         
-        # If no cache, run fresh slippage analysis
+        # Run fresh slippage analysis if needed
         if not slippage_analysis:
+            logger.info(f"  📊 Running fresh slippage analysis...")
             try:
+                # Get liquidity data
                 liq_data = get_token_liquidity_simple(token_address)
-                velocity_analysis = analyze_velocity(liq_data['liquidity_usd'], liq_data['volume_24h_usd'])
+                
+                # Analyze velocity
+                velocity_analysis = analyze_velocity(
+                    liq_data['liquidity_usd'], 
+                    liq_data['volume_24h_usd']
+                )
+                
+                # Probe slippage curve
                 slippage_data = probe_slippage_curve(token_address)
+                
+                # Analyze patterns
                 analysis = analyze_slippage_patterns(slippage_data, token_address)
+                
+                # Classify market state
                 slippage_analysis = classify_market_state(analysis)
                 slippage_analysis['velocity'] = velocity_analysis
                 slippage_analysis['slippage_data'] = {
@@ -2718,18 +2751,26 @@ def get_fused_signal(token_address: str):
                     'buy_slippage': slippage_data.get('buy_slippage', []),
                     'sell_slippage': slippage_data.get('sell_slippage', [])
                 }
+                
+                # Cache for 5 minutes
                 analysis_cache[token_address] = {
                     'result': slippage_analysis,
                     'timestamp': time.time()
                 }
+                logger.info(f"  ✓ Fresh analysis complete (state: {slippage_analysis.get('state')})")
+                
             except Exception as e:
-                logger.error(f"Slippage analysis failed: {e}")
+                logger.error(f"  ❌ Slippage analysis failed: {e}")
                 slippage_analysis = None
         
-        # Fuse the signals
+        # Fuse the signals from both systems
         fused = signal_fusion.fuse_signals(token_address, metrics_snapshot, slippage_analysis)
         
-        logger.info(f"🎯 Fused: {fused.direction.value} ({fused.confidence:.0%}) - {fused.action_code}")
+        # Log the fused result
+        logger.info(f"  🎯 Fused signal: {fused.direction.value} (confidence: {fused.confidence:.0%})")
+        logger.info(f"  📋 Action: {fused.action_code} - {fused.action}")
+        if not fused.systems_agree:
+            logger.info(f"  ⚠️ Systems disagree: {fused.disagreement_reason}")
         
         return jsonify({
             'success': True,
@@ -2742,8 +2783,278 @@ def get_fused_signal(token_address: str):
         }), 200
         
     except Exception as e:
-        logger.error(f"Error generating fused signal: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        logger.error(f"❌ Error generating fused signal: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': int(time.time())
+        }), 500
+
+
+@app.route('/signal/batch', methods=['POST'])
+def get_batch_fused_signals():
+    """
+    Get fused signals for multiple tokens at once.
+    
+    Perfect for monitoring a watchlist of tokens without making individual
+    API calls for each one. Much faster for scanning multiple tokens.
+    
+    Request body (JSON):
+    {
+        "token_addresses": ["addr1", "addr2", "addr3"],
+        "access_code": "YOUR-CODE"  (optional)
+    }
+    
+    Returns:
+        Dictionary mapping each token address to its fused signal
+    """
+    try:
+        data = request.get_json()
+        
+        # Validate request has token addresses
+        if not data or 'token_addresses' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'Missing token_addresses array in request body'
+            }), 400
+        
+        token_addresses = data['token_addresses']
+        access_code = data.get('access_code', 'anonymous')
+        
+        # Limit batch size to prevent server overload
+        max_batch = 10
+        if len(token_addresses) > max_batch:
+            return jsonify({
+                'success': False,
+                'error': f'Maximum batch size is {max_batch} tokens. You requested {len(token_addresses)}.'
+            }), 400
+        
+        logger.info(f"📦 Batch signal request for {len(token_addresses)} tokens")
+        
+        results = {}
+        
+        # Process each token in the batch
+        for token_address in token_addresses:
+            try:
+                # Get metrics if available (fast - just a lookup)
+                metrics_snapshot = None
+                if metrics_manager:
+                    metrics_snapshot = metrics_manager.get_metrics(token_address)
+                
+                # For batch requests, only use cached slippage analysis
+                # Don't run fresh analysis to keep batch request fast
+                slippage_analysis = None
+                if token_address in analysis_cache:
+                    cached = analysis_cache[token_address]
+                    cache_age = time.time() - cached['timestamp']
+                    # Allow slightly older cache for batch mode (10 minutes instead of 5)
+                    if cache_age < 600:
+                        slippage_analysis = cached['result']
+                
+                # Fuse the signals
+                fused = signal_fusion.fuse_signals(
+                    token_address,
+                    metrics_snapshot,
+                    slippage_analysis
+                )
+                
+                results[token_address] = {
+                    'signal': fused.to_dict(),
+                    'has_metrics': metrics_snapshot is not None,
+                    'has_slippage': slippage_analysis is not None,
+                    'cache_age': cache_age if slippage_analysis else None
+                }
+                
+                logger.info(f"  ✓ {token_address[:8]}: {fused.direction.value} ({fused.confidence:.0%})")
+                
+            except Exception as e:
+                logger.error(f"  ❌ Error processing {token_address[:8]}: {e}")
+                results[token_address] = {
+                    'error': str(e),
+                    'signal': None
+                }
+        
+        return jsonify({
+            'success': True,
+            'results': results,
+            'count': len(results),
+            'timestamp': int(time.time())
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Batch signal error: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/signal/explain/<token_address>', methods=['GET'])
+def explain_signal(token_address: str):
+    """
+    Get a detailed, human-readable explanation of the fused signal.
+    
+    This endpoint takes the raw signal data and converts it into plain English
+    explanations that users can understand. Perfect for displaying in your UI
+    to help users understand WHY the system is recommending an action.
+    
+    Returns:
+        Detailed breakdown with natural language explanation, metrics breakdown,
+        slippage breakdown, risk factors, and system agreement analysis
+    """
+    try:
+        logger.info(f"📖 Signal explanation request for {token_address[:8]}...")
+        
+        # Get the fused signal first
+        metrics_snapshot = metrics_manager.get_metrics(token_address) if metrics_manager else None
+        slippage_analysis = analysis_cache.get(token_address, {}).get('result')
+        
+        fused = signal_fusion.fuse_signals(token_address, metrics_snapshot, slippage_analysis)
+        
+        # Build detailed explanation structure
+        explanation = {
+            'summary': fused.action,
+            'direction': fused.direction.value,
+            'confidence': f"{fused.confidence:.0%}",
+            'confidence_level': 'HIGH' if fused.confidence > 0.7 else 'MEDIUM' if fused.confidence > 0.5 else 'LOW',
+            'urgency': fused.urgency.value,
+            'systems_agreement': {
+                'agree': fused.systems_agree,
+                'strength': f"{fused.agreement_strength:.0%}" if fused.agreement_strength >= 0 else f"{abs(fused.agreement_strength):.0%} (opposing)",
+                'explanation': fused.disagreement_reason if not fused.systems_agree else "Both systems pointing same direction - higher reliability"
+            },
+            'risk_assessment': {
+                'level': fused.risk_level,
+                'factors': fused.risk_factors,
+                'safe_to_trade': fused.risk_level in ['low', 'medium'] and fused.action_code not in ['AVOID', 'EXIT']
+            },
+            'metrics_breakdown': None,
+            'slippage_breakdown': None
+        }
+        
+        # Add metrics breakdown if available
+        if fused.metrics_signal:
+            ms = fused.metrics_signal
+            explanation['metrics_breakdown'] = {
+                'direction': ms.direction.value,
+                'confidence': f"{ms.confidence:.0%}",
+                'phase': ms.phase,
+                'volume_trend': ms.volume_trend,
+                'pressure': ms.pressure_direction,
+                'key_indicators': {
+                    'VTS (Volume Trend Score)': f"{ms.vts:.2f}" + (" 📈 Surging" if ms.vts > 2.0 else " ➡️ Normal" if ms.vts > 0.8 else " 📉 Declining"),
+                    'PII (Pressure Index)': f"{ms.pii:.3f}" + (" 🟢 Buy pressure" if ms.pii > 0.1 else " 🔴 Sell pressure" if ms.pii < -0.1 else " ⚪ Neutral"),
+                    'VEI (Exhaustion Index)': f"{ms.vei:.2f}" + (" ✅ Healthy" if ms.vei > 0.5 else " ⚠️ Exhausted"),
+                    'Conviction Multiplier': f"{ms.conviction_multiplier:.2f}" + (" 💪 High quality" if ms.conviction_multiplier > 1.2 else " 🤖 Possibly artificial" if ms.conviction_multiplier < 0.8 else " ➡️ Normal")
+                },
+                'factors': ms.key_factors
+            }
+        
+        # Add slippage breakdown if available
+        if fused.slippage_signal:
+            ss = fused.slippage_signal
+            explanation['slippage_breakdown'] = {
+                'direction': ss.direction.value,
+                'confidence': f"{ss.confidence:.0%}",
+                'state': ss.state,
+                'liquidity_health': ss.liquidity_health,
+                'asymmetry': f"{ss.asymmetry_ratio:.2f}x" + (" ⚠️ High" if ss.asymmetry_ratio > 2.0 else " ✅ Normal"),
+                'warnings': {
+                    'honeypot': ss.is_honeypot,
+                    'manipulation': ss.manipulation_detected
+                },
+                'factors': ss.key_factors
+            }
+        
+        # Generate natural language explanation
+        nl_explanation = _generate_natural_language_explanation(fused)
+        explanation['natural_language'] = nl_explanation
+        
+        return jsonify({
+            'success': True,
+            'token_address': token_address,
+            'explanation': explanation,
+            'timestamp': int(time.time())
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error explaining signal: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+def _generate_natural_language_explanation(fused) -> str:
+    """
+    Helper function to generate human-readable paragraph explaining the signal.
+    
+    This takes the technical signal data and converts it into language that
+    a non-technical user can understand and act upon.
+    """
+    parts = []
+    
+    # Opening based on direction
+    direction_intros = {
+        'strong_bullish': "🚀 This token is showing strong bullish signals.",
+        'bullish': "📈 This token is showing moderately bullish signals.",
+        'neutral': "⏸️ This token is not showing a clear directional signal right now.",
+        'bearish': "📉 This token is showing bearish warning signs.",
+        'strong_bearish': "⚠️ This token is showing strong bearish signals.",
+        'danger': "🚨 DANGER: This token has critical red flags - DO NOT BUY!"
+    }
+    parts.append(direction_intros.get(fused.direction.value, "Signal unclear."))
+    
+    # Agreement explanation
+    if fused.systems_agree:
+        parts.append(f"Both analysis systems agree (alignment: {fused.agreement_strength:.0%}), which significantly increases confidence in this assessment.")
+    else:
+        parts.append(f"⚠️ The two analysis systems are showing conflicting signals. {fused.disagreement_reason}")
+    
+    # Metrics contribution
+    if fused.metrics_signal:
+        ms = fused.metrics_signal
+        if ms.vts > 2.0:
+            parts.append(f"Real-time data shows a significant volume surge ({ms.vts:.1f}x normal levels) with {ms.pressure_direction.replace('_', ' ')} pressure.")
+        elif ms.phase in ['early', 'mid']:
+            parts.append(f"The token is currently in {ms.phase} phase with {ms.volume_trend.replace('_', ' ')} volume - momentum may be building.")
+        elif ms.phase in ['late', 'exhaustion']:
+            parts.append(f"⚠️ Caution: The token appears to be in {ms.phase} phase, suggesting the current move may be near its end.")
+        
+        if ms.conviction_multiplier < 0.8:
+            parts.append(f"⚠️ Trade conviction is low ({ms.conviction_multiplier:.2f}) - volume may be artificial or wash trading.")
+    
+    # Slippage contribution
+    if fused.slippage_signal:
+        ss = fused.slippage_signal
+        if ss.is_honeypot:
+            parts.append("🚨 CRITICAL WARNING: Liquidity analysis indicates this is likely a honeypot - you will NOT be able to sell your tokens!")
+        elif ss.liquidity_health == 'toxic':
+            parts.append("☠️ Liquidity structure is toxic - selling will result in severe slippage (potential rug pull setup).")
+        elif ss.asymmetry_ratio > 2.0:
+            parts.append(f"⚖️ Liquidity is heavily asymmetric ({ss.asymmetry_ratio:.1f}x harder to sell than buy) - this is a warning sign.")
+        elif ss.asymmetry_ratio < 0.6:
+            parts.append("✅ Liquidity structure actually favors buyers over sellers - potential accumulation opportunity.")
+        
+        if ss.state == 'PRE_PUMP':
+            parts.append("📊 Slippage patterns suggest pre-pump setup detected.")
+        elif ss.state == 'PRE_DUMP':
+            parts.append("📊 Slippage patterns suggest pre-dump warning signs.")
+    
+    # Risk summary
+    if fused.risk_level in ['extreme', 'high']:
+        parts.append(f"🔴 Overall risk assessment: {fused.risk_level.upper()}. Exercise extreme caution or avoid entirely.")
+    elif fused.risk_level == 'medium':
+        parts.append("🟡 Moderate risk detected - only trade with proper risk management.")
+    else:
+        parts.append("🟢 Risk appears manageable with standard precautions.")
+    
+    # Closing with action
+    parts.append(f"\n\n**Recommendation:** {fused.action}")
+    
+    return " ".join(parts)
 
 
 # ============================================================================
