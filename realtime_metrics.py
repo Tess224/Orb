@@ -97,7 +97,11 @@ class MetricsSnapshot:
     # Metadata
     liquidity_usd: float = 0.0
     total_trades_processed: int = 0
-
+    # Data maturity indicators
+    token_age_minutes: float = 0  # How long we've been tracking (minutes)
+    total_transitions_observed: int = 0  # How many phase transitions recorded
+    data_maturity_level: str = "insufficient"  # insufficient, preliminary, reliable, mature
+    confidence_score: float = 0.0  # Overall confidence in predictions (0-1)
 
 class TokenMetricsTracker:
     """
@@ -1498,6 +1502,29 @@ class TokenMetricsTracker:
 
     def get_current_metrics(self) -> MetricsSnapshot:
         """Get most recent metrics snapshot - unchanged."""
+        # Calculate data maturity
+        tracking_duration_minutes = (time.time() - self.started_at) / 60
+        total_transitions = len(self.phase_transition_history) if hasattr(self, 'phase_transition_history') else 0
+
+# Determine maturity level
+        if total_transitions < 3:
+            maturity_level = "insufficient"
+            confidence = 0.2
+        elif total_transitions < 10:
+            maturity_level = "preliminary"  
+            confidence = 0.5
+        elif total_transitions < 30:
+            maturity_level = "reliable"
+            confidence = 0.8
+        else:
+            maturity_level = "mature"
+            confidence = 0.95
+
+        snapshot.token_age_minutes = tracking_duration_minutes
+        snapshot.total_transitions_observed = total_transitions
+        snapshot.data_maturity_level = maturity_level
+        snapshot.confidence_score = confidence
+
         if self.metric_history:
             return self.metric_history[-1]
         else:
