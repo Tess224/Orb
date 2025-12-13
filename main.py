@@ -1,6 +1,6 @@
 """
 Solana Token Pump/Dump Detection System - Backend API
-This server analyzes token slippage patterns to detect pre-pump and pre-dump signals
+This server analyzes token slippage patterns to detect pre-pumps and pre-dump signals
 by probing Jupiter's quote API and analyzing liquidity structure asymmetries.
 """
 
