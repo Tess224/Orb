@@ -213,7 +213,16 @@ class PollingTradeCollector:
                 
                 from_addr = transfer.get('fromUserAccount', '')
                 to_addr = transfer.get('toUserAccount', '')
-                amount = transfer.get('tokenAmount', 0)
+                
+                # Helius returns tokenAmount as a float directly, not in a nested object
+                # Handle both possible formats just to be safe
+                token_amount_raw = transfer.get('tokenAmount', 0)
+                if isinstance(token_amount_raw, dict):
+                    # If it's a dict, extract the ui_amount field
+                    amount = float(token_amount_raw.get('uiAmount', 0))
+                else:
+                    # If it's already a number, use it directly
+                    amount = float(token_amount_raw)
                 
                 if from_addr == pool_address:
                     # Tokens leaving pool = someone bought
@@ -228,7 +237,15 @@ class PollingTradeCollector:
             for transfer in native_transfers:
                 from_addr = transfer.get('fromUserAccount', '')
                 to_addr = transfer.get('toUserAccount', '')
-                amount = transfer.get('amount', 0) / 1e9  # Convert lamports to SOL
+                
+                # Helius returns amount in lamports, convert to SOL
+                amount_raw = transfer.get('amount', 0)
+                if isinstance(amount_raw, dict):
+                    # If it's nested, extract the value
+                    amount = float(amount_raw.get('amount', 0)) / 1e9
+                else:
+                    # If it's a direct number, use it (already in lamports)
+                    amount = float(amount_raw) / 1e9
                 
                 if from_addr == pool_address:
                     sol_change -= amount
