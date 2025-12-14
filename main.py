@@ -51,13 +51,14 @@ wallet_analysis_cache: Dict[str, Dict] = {}
 # Rate limiting storage - tracks how many analyses each access code has used
 # Structure: {'ACCESS-CODE': {'count': 5, 'reset_time': 1234567890}}
 rate_limit_storage: Dict[str, Dict] = {}
-# NEW GLOBALS FOR REAL-TIME SYSTEMm
-websocket_client: Optional[HeliusWebSocketClient] = None
+# NEW GLOBALS FOR REAL-TIME SYSTEM
+polling_collector: Optional[PollingTradeCollector] = None
 metrics_manager: Optional[MetricsManager] = None
-websocket_thread: Optional[threading.Thread] = None
+polling_thread: Optional[threading.Thread] = None
 token_to_pool_map: Dict[str, str] = {}
-websocket_loop = None  # Will hold the WebSocket's event loop
+polling_loop = None  # Will hold the polling collector's event loop
 state_analyzer = None
+
 
 # Rate limiting configuration
 DAILY_ANALYSIS_LIMIT = 10  # Default limit per access code per day
