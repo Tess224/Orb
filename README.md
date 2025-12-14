@@ -1,2 +1,2 @@
 # OrbAI
-an analytical systems
+an analytical system
