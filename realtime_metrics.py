@@ -1501,54 +1501,54 @@ class TokenMetricsTracker:
 
 
     def get_current_metrics(self) -> MetricsSnapshot:
-    """Get most recent metrics snapshot with maturity data calculated and added."""
+        """Get most recent metrics snapshot with maturity data calculated and added."""
     
     # First, get the base snapshot using your existing logic
-    if self.metric_history:
-        snapshot = self.metric_history[-1]
-    else:
-        self._take_snapshot()
-        snapshot = self.metric_history[-1] if self.metric_history else MetricsSnapshot(
-            timestamp=time.time(),
-            token_age_hours=self.get_token_age_hours()
-        )
+        if self.metric_history:
+            snapshot = self.metric_history[-1]
+        else:
+            self._take_snapshot()
+            snapshot = self.metric_history[-1] if self.metric_history else MetricsSnapshot(
+                timestamp=time.time(),
+                token_age_hours=self.get_token_age_hours()
+            )
     
     # Now calculate maturity data to add to this snapshot
     # NOTE: The attribute is tracking_started_at, not started_at
-    if hasattr(self, 'tracking_started_at') and self.tracking_started_at:
-        tracking_duration_minutes = (time.time() - self.tracking_started_at) / 60
-    else:
-        tracking_duration_minutes = 0
+        if hasattr(self, 'tracking_started_at') and self.tracking_started_at:
+            tracking_duration_minutes = (time.time() - self.tracking_started_at) / 60
+        else:
+            tracking_duration_minutes = 0
     
     # Count phase transitions from historical snapshots
     # We look at the snapshot history to count how many times the phase changed
-    total_transitions = 0
-    if len(self.metric_history) >= 2:
-        for i in range(1, len(self.metric_history)):
-            if self.metric_history[i].phase != self.metric_history[i-1].phase:
-                total_transitions += 1
+        total_transitions = 0
+        if len(self.metric_history) >= 2:
+            for i in range(1, len(self.metric_history)):
+                if self.metric_history[i].phase != self.metric_history[i-1].phase:
+                    total_transitions += 1
     
     # Determine maturity level based on transition count
-    if total_transitions < 3:
-        maturity_level = "insufficient"
-        confidence = 0.2
-    elif total_transitions < 10:
-        maturity_level = "preliminary"
-        confidence = 0.5
-    elif total_transitions < 30:
-        maturity_level = "reliable"
-        confidence = 0.8
-    else:
-        maturity_level = "mature"
-        confidence = 0.95
+        if total_transitions < 3:
+            maturity_level = "insufficient"
+            confidence = 0.2
+        elif total_transitions < 10:
+            maturity_level = "preliminary"
+            confidence = 0.5
+        elif total_transitions < 30:
+            maturity_level = "reliable"
+            confidence = 0.8
+        else:
+            maturity_level = "mature"
+            confidence = 0.95
     
     # Add the calculated maturity data to the snapshot
-    snapshot.token_age_minutes = tracking_duration_minutes
-    snapshot.total_transitions_observed = total_transitions
-    snapshot.data_maturity_level = maturity_level
-    snapshot.confidence_score = confidence
+        snapshot.token_age_minutes = tracking_duration_minutes
+        snapshot.total_transitions_observed = total_transitions
+        snapshot.data_maturity_level = maturity_level
+        snapshot.confidence_score = confidence
     
-    return snapshot
+        return snapshot
 
 
     def get_historical_snapshots(self, lookback_minutes: int = 60) -> List[MetricsSnapshot]:
