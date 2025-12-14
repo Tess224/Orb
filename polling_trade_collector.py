@@ -199,6 +199,32 @@ class PollingTradeCollector:
             signature = tx_data.get('signature', '')
             timestamp = tx_data.get('timestamp', 0)
             
+            # DEBUG: Log the structure of the first transaction to understand Helius's format
+            if not hasattr(self, '_logged_sample_tx'):
+                self._logged_sample_tx = True
+                logger.info("=" * 70)
+                logger.info("🔍 DEBUG: Sample Transaction Structure from Helius")
+                logger.info("=" * 70)
+                logger.info(f"Top-level keys: {list(tx_data.keys())}")
+                logger.info(f"Signature: {signature[:16]}...")
+                logger.info(f"Timestamp: {timestamp}")
+                
+                # Log what's in tokenTransfers
+                token_transfers_sample = tx_data.get('tokenTransfers', [])
+                logger.info(f"tokenTransfers count: {len(token_transfers_sample)}")
+                if token_transfers_sample:
+                    logger.info(f"First tokenTransfer keys: {list(token_transfers_sample[0].keys())}")
+                    logger.info(f"First tokenTransfer sample: {token_transfers_sample[0]}")
+                
+                # Log what's in nativeTransfers
+                native_transfers_sample = tx_data.get('nativeTransfers', [])
+                logger.info(f"nativeTransfers count: {len(native_transfers_sample)}")
+                if native_transfers_sample:
+                    logger.info(f"First nativeTransfer keys: {list(native_transfers_sample[0].keys())}")
+                    logger.info(f"First nativeTransfer sample: {native_transfers_sample[0]}")
+                
+                logger.info("=" * 70)
+            
             # Helius gives us arrays of token transfers and SOL transfers
             token_transfers = tx_data.get('tokenTransfers', [])
             native_transfers = tx_data.get('nativeTransfers', [])
@@ -206,10 +232,16 @@ class PollingTradeCollector:
             # Track how our token moved relative to the pool
             token_change = 0  # Negative = tokens left pool (buy), Positive = tokens entered pool (sell)
             
+            # DEBUG: Track what we find
+            relevant_token_transfers = 0
+            
             for transfer in token_transfers:
                 # Only care about transfers involving our specific token
-                if transfer.get('mint') != token_address:
+                mint = transfer.get('mint', '')
+                if mint != token_address:
                     continue
+                
+                relevant_token_transfers += 1
                 
                 from_addr = transfer.get('fromUserAccount', '')
                 to_addr = transfer.get('toUserAccount', '')
@@ -222,21 +254,36 @@ class PollingTradeCollector:
                     amount = float(token_amount_raw.get('uiAmount', 0))
                 else:
                     # If it's already a number, use it directly
-                    amount = float(token_amount_raw)
+                    amount = float(token_amount_raw) if token_amount_raw else 0
+                
+                # DEBUG: Log what we're seeing
+                if relevant_token_transfers == 1:
+                    logger.info(f"  🔍 Found token transfer: {amount:.2f} tokens, from={from_addr[:8]}..., to={to_addr[:8]}...")
                 
                 if from_addr == pool_address:
                     # Tokens leaving pool = someone bought
                     token_change -= amount
+                    logger.info(f"    📤 Tokens LEFT pool: {amount:.2f} (BUY signal)")
                 elif to_addr == pool_address:
                     # Tokens entering pool = someone sold
                     token_change += amount
+                    logger.info(f"    📥 Tokens ENTERED pool: {amount:.2f} (SELL signal)")
             
             # Track how SOL moved relative to the pool
             sol_change = 0  # Negative = SOL left pool, Positive = SOL entered pool
             
+            # DEBUG: Track what we find
+            relevant_sol_transfers = 0
+            
             for transfer in native_transfers:
                 from_addr = transfer.get('fromUserAccount', '')
                 to_addr = transfer.get('toUserAccount', '')
+                
+                # Check if this transfer involves the pool
+                if from_addr != pool_address and to_addr != pool_address:
+                    continue
+                
+                relevant_sol_transfers += 1
                 
                 # Helius returns amount in lamports, convert to SOL
                 amount_raw = transfer.get('amount', 0)
@@ -245,12 +292,25 @@ class PollingTradeCollector:
                     amount = float(amount_raw.get('amount', 0)) / 1e9
                 else:
                     # If it's a direct number, use it (already in lamports)
-                    amount = float(amount_raw) / 1e9
+                    amount = float(amount_raw) / 1e9 if amount_raw else 0
+                
+                # DEBUG: Log what we're seeing
+                if relevant_sol_transfers == 1:
+                    logger.info(f"  🔍 Found SOL transfer: {amount:.4f} SOL, from={from_addr[:8]}..., to={to_addr[:8]}...")
                 
                 if from_addr == pool_address:
                     sol_change -= amount
+                    logger.info(f"    📤 SOL LEFT pool: {amount:.4f} SOL")
                 elif to_addr == pool_address:
                     sol_change += amount
+                    logger.info(f"    📥 SOL ENTERED pool: {amount:.4f} SOL")
+            
+            # DEBUG: Log what we found overall
+            logger.info(f"  📊 Summary for tx {signature[:8]}...")
+            logger.info(f"    Token change: {token_change:.2f} (negative = buy, positive = sell)")
+            logger.info(f"    SOL change: {sol_change:.4f} (negative = left pool, positive = entered pool)")
+            logger.info(f"    Relevant token transfers: {relevant_token_transfers}")
+            logger.info(f"    Relevant SOL transfers: {relevant_sol_transfers}")
             
             # Determine trade direction based on the movements
             # BUY: tokens left pool (negative change), SOL entered pool (positive change)
@@ -261,13 +321,16 @@ class PollingTradeCollector:
                 direction = 'buy'
                 token_amount = abs(token_change)
                 sol_amount = sol_change
+                logger.info(f"  ✅ Detected BUY: {token_amount:.2f} tokens for {sol_amount:.4f} SOL")
             elif token_change > 0 and sol_change < 0:
                 # This is a SELL
                 direction = 'sell'
                 token_amount = token_change
                 sol_amount = abs(sol_change)
+                logger.info(f"  ✅ Detected SELL: {token_amount:.2f} tokens for {sol_amount:.4f} SOL")
             else:
                 # Not a clear swap (maybe liquidity add/remove, or failed transaction)
+                logger.info(f"  ❌ Not a clear swap (token_change={token_change:.2f}, sol_change={sol_change:.4f})")
                 return None
             
             # Sanity check - token amount should be positive
@@ -297,8 +360,18 @@ class PollingTradeCollector:
             self.stats['trades_parsed'] += 1
             return trade
             
+        except KeyError as e:
+            logger.error(f"⚠️ KeyError parsing transaction {signature[:8] if signature else 'unknown'}: Missing key {e}")
+            logger.error(f"   Transaction keys available: {list(tx_data.keys())}")
+            return None
+        except TypeError as e:
+            logger.error(f"⚠️ TypeError parsing transaction {signature[:8] if signature else 'unknown'}: {e}")
+            logger.error(f"   This usually means unexpected data type in transaction structure")
+            return None
         except Exception as e:
-            logger.warning(f"⚠️ Error parsing transaction: {e}")
+            logger.error(f"❌ Unexpected error parsing transaction {signature[:8] if signature else 'unknown'}: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return None
     
     async def poll_pool(self, pool_address: str):
@@ -310,14 +383,23 @@ class PollingTradeCollector:
         parses them into trades, and notifies callbacks.
         """
         try:
+            pool_info = self.monitored_pools.get(pool_address, {})
+            token_symbol = pool_info.get('token_symbol', 'UNKNOWN')
+            
+            logger.info("=" * 70)
+            logger.info(f"🔄 POLLING CYCLE for pool {pool_address[:8]}... (Token: {token_symbol})")
+            logger.info("=" * 70)
+            
             # Fetch recent transactions from Helius
             transactions = await self.fetch_recent_transactions(pool_address, limit=50)
             
             if not transactions:
-                logger.debug(f"No transactions returned for {pool_address[:8]}")
+                logger.info(f"  ℹ️ No transactions returned for {pool_address[:8]}")
+                logger.info("=" * 70)
                 return
             
             self.stats['transactions_fetched'] += len(transactions)
+            logger.info(f"  📥 Fetched {len(transactions)} transactions from Helius")
             
             # Filter to only new signatures we haven't processed
             new_transactions = []
@@ -328,18 +410,23 @@ class PollingTradeCollector:
                     self.processed_signatures[pool_address].add(sig)
             
             if not new_transactions:
-                logger.debug(f"No new transactions for {pool_address[:8]}")
+                logger.info(f"  ℹ️ All transactions already processed (0 new out of {len(transactions)} total)")
+                logger.info("=" * 70)
                 return
             
-            logger.info(f"📊 Processing {len(new_transactions)} new transactions for {pool_address[:8]}")
+            logger.info(f"  🆕 Found {len(new_transactions)} NEW transactions to process")
+            logger.info(f"  📊 Processing each transaction...")
             
             # Parse each new transaction and notify callbacks
-            for tx_data in new_transactions:
+            trades_found = 0
+            for idx, tx_data in enumerate(new_transactions):
+                logger.info(f"  ──────── Transaction {idx + 1}/{len(new_transactions)} ────────")
                 trade = self.parse_helius_transaction(tx_data, pool_address)
                 
                 if trade:
+                    trades_found += 1
                     # We found a valid trade! Notify all registered callbacks
-                    logger.info(f"💱 Trade: {trade['direction'].upper()} ${trade['size_usd']:.2f} on {pool_address[:8]}")
+                    logger.info(f"  💱 Trade #{trades_found}: {trade['direction'].upper()} ${trade['size_usd']:.2f}")
                     
                     for callback in self.trade_callbacks:
                         try:
@@ -348,7 +435,10 @@ class PollingTradeCollector:
                             else:
                                 callback(trade)
                         except Exception as e:
-                            logger.error(f"❌ Error in trade callback: {e}")
+                            logger.error(f"  ❌ Error in trade callback: {e}")
+            
+            logger.info(f"  ✅ Polling complete: {trades_found} trades found from {len(new_transactions)} new transactions")
+            logger.info("=" * 70)
             
             # Keep the processed signatures set from growing unbounded
             # Only keep the last 1000 signatures per pool (plenty for 2-minute polling)
@@ -356,9 +446,12 @@ class PollingTradeCollector:
                 # Convert to list, keep newest 500
                 sigs_list = list(self.processed_signatures[pool_address])
                 self.processed_signatures[pool_address] = set(sigs_list[-500:])
+                logger.info(f"  🧹 Cleaned up old signatures (kept 500 most recent)")
             
         except Exception as e:
             logger.error(f"❌ Error polling pool {pool_address[:8]}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
     async def polling_loop(self):
         """
