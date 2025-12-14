@@ -1501,12 +1501,34 @@ class TokenMetricsTracker:
 
 
     def get_current_metrics(self) -> MetricsSnapshot:
-        """Get most recent metrics snapshot - unchanged."""
-        # Calculate data maturity
-        tracking_duration_minutes = (time.time() - self.started_at) / 60
-        total_transitions = len(self.phase_transition_history) if hasattr(self, 'phase_transition_history') else 0
+        """Get most recent metrics snapshot with maturity data added."""
+        # First, get the base snapshot using your existing logic
+        if self.metric_history:
+            snapshot = self.metric_history[-1]
+        else:
+            self._take_snapshot()
+            snapshot = self.metric_history[-1] if self.metric_history else MetricsSnapshot(
+                timestamp=time.time(),
+                token_age_hours=self.get_token_age_hours()
+            )
+    
+    # Now calculate and add maturity data to this snapshot
+    # This happens every time someone requests current metrics, ensuring the maturity
+    # data is always fresh and reflects the current tracking duration
+    
+    # Calculate tracking duration safely, checking if started_at exists
+        if hasattr(self, 'started_at') and self.started_at:
+            tracking_duration_minutes = (time.time() - self.started_at) / 60
+        else:
+            tracking_duration_minutes = 0
+    
+    # Count phase transitions if the history exists
+        if hasattr(self, 'phase_transition_history'):
+            total_transitions = len(self.phase_transition_history)
+        else:
+            total_transitions = 0
 
-# Determine maturity level
+    # Determine maturity level based on transition count
         if total_transitions < 3:
             maturity_level = "insufficient"
             confidence = 0.2
@@ -1519,20 +1541,15 @@ class TokenMetricsTracker:
         else:
             maturity_level = "mature"
             confidence = 0.95
-
+    
+    # Add the maturity data to the snapshot
+    # We're modifying the snapshot object in place to add these new fields
         snapshot.token_age_minutes = tracking_duration_minutes
         snapshot.total_transitions_observed = total_transitions
         snapshot.data_maturity_level = maturity_level
         snapshot.confidence_score = confidence
-
-        if self.metric_history:
-            return self.metric_history[-1]
-        else:
-            self._take_snapshot()
-            return self.metric_history[-1] if self.metric_history else MetricsSnapshot(
-                timestamp=time.time(),
-                token_age_hours=self.get_token_age_hours()
-            )
+    
+        return snapshot
 
 
     def get_historical_snapshots(self, lookback_minutes: int = 60) -> List[MetricsSnapshot]:
