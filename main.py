@@ -1664,78 +1664,80 @@ def analyze_velocity(liquidity_usd: float, volume_24h_usd: float) -> Dict:
 # WEBSOCKET BACKGROUND THREAD SYSTEM
 # ============================================================================
 
-def run_websocket_loop(api_key: str):
+def run_polling_loop(api_key: str):
     """
     This function runs in a separate background thread.
-    It handles all the async WebSocket operations.
+    It handles all the async polling operations.
     
     Think of this as a separate worker that runs alongside your Flask server,
-    constantly listening for trades.
+    periodically checking for new trades every 2 minutes instead of getting
+    real-time notifications. The trade-off is lower costs for slightly delayed
+    data, but since your metrics work on 5-minute, 15-minute, and hourly windows,
+    a 2-minute delay doesn't materially affect accuracy.
     """
-    global websocket_client, metrics_manager, websocket_loop
-
+    global polling_collector, metrics_manager, polling_loop
+    
     try:
-        logger.info("🚀 Starting WebSocket background thread...")
-
+        logger.info("🚀 Starting polling background thread...")
+        
         # Create a new event loop for this thread
-        # (Each thread needs its own event loop for async operations)
+        # Each thread needs its own event loop for async operations
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        websocket_loop = loop
-
-        # Create the WebSocket client
-        websocket_client = HeliusWebSocketClient(api_key)
-
-        # Create the metrics manager
-        metrics_manager = MetricsManager(state_analyzer=None)
-
-        # Connect the two: when WebSocket gets trade data, send it to metrics manager
-        websocket_client.add_trade_callback(metrics_manager.handle_trade)
-
-        # Define an async function to connect and start listening
-        async def connect_and_listen():
-            connected = await websocket_client.connect()
-            if connected:
-                logger.info("✅ WebSocket connected, now listening for trades...")
-                # This will run forever until an error occurs
-                await websocket_client.listen()
-            else:
-                logger.error("❌ Failed to connect WebSocket")
-
-        # CRITICAL FIX: Keep the loop running forever
-        # Don't let it close after the first connection attempt
+        polling_loop = loop
+        
+        # Create the polling collector with 2-minute interval
+        # You can adjust this: 120 seconds = cheap but 2-min delay
+        #                      60 seconds = 2x cost but 1-min delay
+        #                      180 seconds = cheaper but 3-min delay
+        polling_collector = PollingTradeCollector(api_key, poll_interval_seconds=120)
+        
+        # Create the metrics manager if it doesn't exist yet
+        if metrics_manager is None:
+            metrics_manager = MetricsManager()
+        
+        # Connect the two: when polling collector finds a trade, send it to metrics manager
+        polling_collector.add_trade_callback(metrics_manager.handle_trade)
+        
+        # Define an async function to start the polling system
+        async def start_polling():
+            logger.info("✅ Polling collector starting, will check for trades every 120 seconds...")
+            # This will run forever until an error occurs or we stop it
+            await polling_collector.start()
+        
+        # Run the polling system
         try:
-            loop.run_until_complete(connect_and_listen())
+            loop.run_until_complete(start_polling())
         except KeyboardInterrupt:
-            logger.info("🛑 WebSocket thread stopping due to keyboard interrupt")
+            logger.info("🛑 Polling thread stopping due to keyboard interrupt")
         except Exception as e:
-            logger.error(f"❌ Error in WebSocket connection: {e}")
+            logger.error(f"❌ Error in polling system: {e}")
         
-        # Keep the loop alive to handle scheduled coroutines
-        # This is crucial - the loop needs to stay open for subscribe_to_pool calls
-        logger.info("🔄 WebSocket listener ended, but keeping event loop alive...")
-        
-        # Run the loop forever to handle any future coroutines scheduled from Flask
+        # Keep the loop alive to handle any scheduled coroutines
+        logger.info("🔄 Polling system ended, keeping event loop alive...")
         loop.run_forever()
-
+        
     except Exception as e:
-        logger.error(f"❌ Critical error in WebSocket thread: {e}")
+        logger.error(f"❌ Critical error in polling thread: {e}")
         import traceback
         logger.error(traceback.format_exc())
     finally:
         # Only close when the entire thread is shutting down
-        logger.info("🔌 Closing WebSocket event loop")
-        if websocket_loop:
-            websocket_loop.close()
+        logger.info("🔌 Closing polling event loop")
+        if polling_loop:
+            polling_loop.close()
 
 
-def start_websocket_background():
+def start_polling_background():
     """
-    Start the WebSocket system in a background thread.
-    
+    Start the polling system in a background thread.
     This gets called when your Flask app starts up.
+    
+    The polling system will check for new trades every 2 minutes instead of
+    getting instant notifications. This dramatically reduces API costs while
+    still providing reasonably fresh data for your metrics calculations.
     """
-    global websocket_thread
+    global polling_thread
     
     # Get Helius API key from environment
     helius_api_key = os.environ.get('HELIUS_API_KEY')
@@ -1745,54 +1747,52 @@ def start_websocket_background():
         logger.warning("⚠️ Set it in your environment variables to enable real-time features")
         return
     
-    logger.info("🔧 Starting WebSocket background thread...")
+    logger.info("🔧 Starting polling background thread...")
     
     # Create and start the thread
-    websocket_thread = threading.Thread(
-        target=run_websocket_loop,
+    polling_thread = threading.Thread(
+        target=run_polling_loop,
         args=(helius_api_key,),
         daemon=True  # Thread will close when main program exits
     )
-    websocket_thread.start()
+    polling_thread.start()
     
-    logger.info("✅ WebSocket thread started successfully")
+    logger.info("✅ Polling thread started successfully")
     
     # Give it a moment to initialize
     time.sleep(2)
 
 
-def subscribe_to_pool_from_sync(pool_address: str, token_address: str):
+def add_pool_to_polling(pool_address: str, token_address: str, token_symbol: str = "UNKNOWN"):
     """
-    Subscribe to a pool from synchronous Flask code.
+    Add a pool to the polling collector from synchronous Flask code.
     
-    This bridges the gap between sync Flask and async WebSocket code.
+    This is simpler than the old WebSocket version because we don't need to
+    schedule coroutines across threads. We just call a regular method on the
+    polling collector that adds the pool to its monitoring list.
+    
+    Args:
+        pool_address: The pool address to monitor
+        token_address: The token's mint address
+        token_symbol: Optional symbol for logging
+        
+    Returns:
+        bool: True if successfully added, False otherwise
     """
-    global websocket_client, websocket_loop
+    global polling_collector
     
-    if not websocket_client or not websocket_loop:
-        logger.warning("⚠️ Cannot subscribe - WebSocket not initialized")
+    if not polling_collector:
+        logger.warning("⚠️ Cannot add pool - polling collector not initialized")
         return False
     
     try:
-        # Create the async subscription coroutine
-        async def do_subscribe():
-            await websocket_client.subscribe_to_pool(
-                pool_address,
-                token_address,
-                token_address[:8]  # Use shortened address as symbol
-            )
-        
-        # Schedule it to run in the WebSocket's event loop
-        future = asyncio.run_coroutine_threadsafe(do_subscribe(), websocket_loop)
-        
-        # Wait up to 5 seconds for it to complete
-        future.result(timeout=5)
-        
-        logger.info(f"✅ Subscribed WebSocket to pool {pool_address[:8]}...")
+        # This is a simple synchronous call - much easier than the WebSocket version!
+        polling_collector.add_pool(pool_address, token_address, token_symbol)
+        logger.info(f"✅ Added pool {pool_address[:8]}... to polling collector")
         return True
         
     except Exception as e:
-        logger.error(f"❌ Error subscribing to pool: {e}")
+        logger.error(f"❌ Error adding pool to collector: {e}")
         return False
         
 
@@ -1879,36 +1879,55 @@ def get_raydium_pool_address(token_address: str) -> Optional[str]:
 
 def start_tracking_token_realtime(token_address: str, pool_address: str, liquidity_usd: float):
     """
-    Start tracking a token in real-time.
+    Start tracking a token in real-time using the polling system.
     
-    This tells the WebSocket to watch this token's pool and tells the
+    This tells the polling collector to watch this token's pool and tells the
     metrics manager to start calculating metrics for it.
-    """
-    global websocket_client, metrics_manager
     
-    if not websocket_client or not metrics_manager:
+    The "real-time" is a bit of a misnomer now - there's a 2-minute delay between
+    when trades happen and when we see them. But for metrics that aggregate over
+    5-minute, 15-minute, and hourly windows, this delay is negligible.
+    
+    Args:
+        token_address: Token's mint address
+        pool_address: Pool's address on Raydium
+        liquidity_usd: Current pool liquidity in USD
+        
+    Returns:
+        bool: True if successfully started tracking
+    """
+    global polling_collector, metrics_manager
+    
+    if not polling_collector or not metrics_manager:
         logger.warning("⚠️ Real-time system not initialized - can't start tracking")
         return False
     
     try:
-        # Add to metrics manager
+        # Add to metrics manager first
         metrics_manager.add_token(token_address, liquidity_usd)
-
-        # Store the mapping
+        
+        # Store the mapping for later reference
         token_to_pool_map[token_address] = pool_address
-
-        # Actually subscribe the WebSocket to this pool
-        subscription_success = subscribe_to_pool_from_sync(pool_address, token_address)
+        
+        # Add the pool to the polling collector
+        # The token address is shortened to 8 chars for use as a symbol
+        subscription_success = add_pool_to_polling(
+            pool_address, 
+            token_address, 
+            token_address[:8]  # Use first 8 chars as symbol
+        )
         
         if not subscription_success:
-            logger.warning("⚠️ WebSocket subscription failed - real-time data may not work")
-
-        logger.info(f"✅ Started real-time tracking for {token_address[:8]}...")
+            logger.warning("⚠️ Failed to add pool to polling collector")
+            return False
+        
+        logger.info(f"✅ Started tracking for {token_address[:8]}...")
         logger.info(f"   Pool: {pool_address[:8]}...")
         logger.info(f"   Liquidity: ${liquidity_usd:,.0f}")
-
+        logger.info(f"   📊 Trades will be collected every 120 seconds")
+        
         return True
-
+        
     except Exception as e:
         logger.error(f"❌ Error starting tracking: {e}")
         return False
@@ -2263,10 +2282,10 @@ def tracking_status():
         
         status = {
             'success': True,
-            'websocket_active': websocket_client is not None,
+            'polling_active': polling_collector is not None,
             'metrics_manager_active': metrics_manager is not None,
             'tracked_tokens': [],
-            'websocket_stats': None,
+            'polling_stats': None,
             'timestamp': int(time.time())
         }
 
@@ -2342,8 +2361,8 @@ def start_tracking():
                 'status': 'rate_limited'
             }), 429
         
-        # Check if WebSocket is active
-        if not websocket_client or not metrics_manager:
+        # Check if polling system is active
+        if not polling_collector or not metrics_manager:
             return jsonify({
                 'error': 'Real-time tracking system not initialized',
                 'message': 'Make sure HELIUS_API_KEY is set in environment variables',
@@ -3260,9 +3279,9 @@ def initialize_system():
     logger.info(f"Probe sizes: {PROBE_SIZES_USD}")
     logger.info(f"Historical measurements kept: {MAX_HISTORICAL_MEASUREMENTS}")
     
-    # Start the WebSocket background thread
+    # Start the polling background thread
     logger.info("🔧 Initializing real-time tracking system...")
-    start_websocket_background()
+    start_polling_background()
 
     # Give WebSocket thread time to fully initialize
     time.sleep(3)
