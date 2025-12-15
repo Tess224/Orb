@@ -230,10 +230,16 @@ class BirdeyeTradeCollector:
             if token_amount == 0 or sol_amount == 0:
                 return None
 
-        # USD value
-            size_usd = float(trade_data.get('volumeUSD') or (token_amount * (trade_data.get('tokenPrice') or trade_data.get('basePrice') or 0)))
+        # Get quote token decimals
+            quote_data = trade_data.get('quote', {})
+            quote_decimals = int(quote_data.get('decimals', 0))
+            quote_amount_raw = float(quote_data.get('amount', 0))
+
+        # Convert to proper USD using decimals
+            size_usd = quote_amount_raw / (10 ** quote_decimals)  # realistic USD value
+
             if size_usd == 0:
-                return None
+                return None  # discard zero-USD trades
 
         # Price: prefer tokenPrice if available, fallback to basePrice / token_amount
             price = trade_data.get('tokenPrice') or trade_data.get('basePrice') or 0
