@@ -1691,7 +1691,7 @@ def run_polling_loop(api_key: str):
             metrics_manager = MetricsManager()
         
         # Connect the two: when Birdeye collector finds a trade, send it to metrics manager
-        birdeye_collector.register_callback(metrics_manager.handle_trade)
+        birdeye_collector.add_trade_callback(metrics_manager.handle_trade)
         
         # Define an async function to start the polling system
         async def start_polling():
