@@ -180,6 +180,8 @@ class BirdeyeTradeCollector:
                     logger.warning(f"⚠️ Rate limited by Birdeye API")
                     return []
                 else:
+                    error_text = await response.text()  
+                    # 👈 ADD THIS
                     logger.warning(f"HTTP {response.status} when fetching trades for {token_address[:8]}")
                     return []
                     
