@@ -202,54 +202,47 @@ class BirdeyeTradeCollector:
     def parse_birdeye_trade(self, trade_data: Dict, token_address: str) -> Optional[Dict]:
         """
         Parse a trade from Birdeye's API response into our standard format.
-        
-        Birdeye gives us clean, pre-parsed data:
-        - txHash: Transaction signature
-        - blockUnixTime: Timestamp
-        - side: 'buy' or 'sell'
-        - source: DEX name (Raydium, Pump.fun, etc.)
-        - amount: Token amount
-        - quote: Quote token info (usually SOL)
-        - volumeUSD: Trade size in USD
-        
+    
         Args:
             trade_data: Trade object from Birdeye API
             token_address: The token this trade is for
-            
+        
         Returns:
-            Parsed trade dict or None if invalid
+            Parsed trade dict or None if invalid (zero amount or missing fields)
         """
         try:
-            # Extract basic info
-            signature = trade_data.get('txHash', '')
-            timestamp = trade_data.get('blockUnixTime', 0)
-            side = trade_data.get('side', '').lower()  # 'buy' or 'sell'
-            
-            # Validate required fields
-            if not signature or not timestamp or side not in ['buy', 'sell']:
+        # Required fields
+            signature = trade_data.get('txHash')
+            timestamp = trade_data.get('blockUnixTime')
+            side = trade_data.get('side', '').lower()
+            if not signature or not timestamp:
                 return None
-            
-            # Extract amounts
+
+            if side not in ['buy', 'sell']:
+                side = 'unknown'
+
+        # Token amounts
             token_amount = float(trade_data.get('amount', 0))
-            
-            # Birdeye provides the quote token info
+            if token_amount == 0:
+                return None  # discard zero-amount trades
+
+        # SOL / quote amounts
             quote_data = trade_data.get('quote', {})
             sol_amount = float(quote_data.get('amount', 0))
-            
-            # Get USD value (Birdeye calculates this for us)
+
+        # USD value
             size_usd = float(trade_data.get('volumeUSD', 0))
-            
-            # Calculate price
-            price = sol_amount / token_amount if token_amount > 0 else 0
-            
-            # Get DEX source
+            if size_usd == 0:
+                return None  # discard zero-USD trades
+
+        # Price: prefer tokenPrice if available, fallback to basePrice / token_amount
+            price = trade_data.get('tokenPrice') or trade_data.get('basePrice') or 0
+            if price == 0 and sol_amount > 0:
+                price = sol_amount / token_amount
+
             dex_source = trade_data.get('source', 'Unknown')
-            
-            # Validate amounts
-            if token_amount == 0 or size_usd == 0:
-                return None
-            
-            # Build the trade object in our standard format
+
+        # Build the trade object in our standard format
             trade = {
                 'token_address': token_address,
                 'timestamp': timestamp,
@@ -259,13 +252,12 @@ class BirdeyeTradeCollector:
                 'price': price,
                 'size_usd': size_usd,
                 'transaction_signature': signature,
-                'dex_source': dex_source  # Extra info from Birdeye
+                'dex_source': dex_source
             }
-            
+
             self.stats['trades_parsed'] += 1
-            
             return trade
-            
+
         except Exception as e:
             logger.warning(f"⚠️ Error parsing Birdeye trade: {e}")
             return None
