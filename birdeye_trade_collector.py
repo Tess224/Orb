@@ -223,12 +223,12 @@ class BirdeyeTradeCollector:
 
         # Token amounts
             token_amount = float(trade_data.get('amount', 0))
-            if token_amount == 0:
-                return None  # discard zero-amount trades
-
-        # SOL / quote amounts
             quote_data = trade_data.get('quote', {})
             sol_amount = float(quote_data.get('amount', 0))
+
+        # Only discard trades if token_amount or sol_amount is zero
+            if token_amount == 0 or sol_amount == 0:
+                return None
 
         # USD value
             size_usd = float(trade_data.get('volumeUSD', 0))
