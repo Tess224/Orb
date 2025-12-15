@@ -124,7 +124,7 @@ class BirdeyeTradeCollector:
         
         logger.info(f"📡 Now monitoring token {token_address[:8]}... (Symbol: {token_symbol})")
 
-    async def fetch_recent_trades(self, token_address: str, limit: int = 100) -> List[Dict]:
+    async def fetch_recent_trades(self, token_address: str, limit: int = 50) -> List[Dict]:
         """
         Fetch recent trades for a token using Birdeye's API.
         
