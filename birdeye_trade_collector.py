@@ -222,7 +222,7 @@ class BirdeyeTradeCollector:
                 side = 'unknown'
 
         # Token amounts
-            token_amount = float(trade_data.get('amount', 0))
+            token_amount = float(trade_data.get('amount') or trade_data.get('to', {}).get('amount', 0))
             quote_data = trade_data.get('quote', {})
             sol_amount = float(quote_data.get('amount', 0))
 
@@ -231,9 +231,9 @@ class BirdeyeTradeCollector:
                 return None
 
         # USD value
-            size_usd = float(trade_data.get('volumeUSD', 0))
+            size_usd = float(trade_data.get('volumeUSD') or (token_amount * (trade_data.get('tokenPrice') or trade_data.get('basePrice') or 0)))
             if size_usd == 0:
-                return None  # discard zero-USD trades
+                return None
 
         # Price: prefer tokenPrice if available, fallback to basePrice / token_amount
             price = trade_data.get('tokenPrice') or trade_data.get('basePrice') or 0
