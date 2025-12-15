@@ -2175,7 +2175,7 @@ def tracking_status():
         
         status = {
             'success': True,
-            'polling_active': polling_collector is not None,
+            'polling_active': birdeye_collector is not None,
             'metrics_manager_active': metrics_manager is not None,
             'tracked_tokens': [],
             'polling_stats': None,
