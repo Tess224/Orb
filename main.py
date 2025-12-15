@@ -2358,9 +2358,9 @@ def stop_tracking():
         logger.info(f"✅ Removed {token_address[:8]} from MetricsManager")
         
         # Remove from token mapping
-            if token_address in token_to_address_map:
-                del token_to_address_map[token_address]
-                logger.info(f"✅ Removed token mapping for {token_address[:8]}")
+        if token_address in token_to_address_map:
+            del token_to_address_map[token_address]
+            logger.info(f"✅ Removed token mapping for {token_address[:8]}")
         
         # TODO: Ideally we'd also unsubscribe from the WebSocket here
         # but that would require adding an unsubscribe method to the WebSocket client
