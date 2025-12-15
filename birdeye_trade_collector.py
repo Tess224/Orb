@@ -143,6 +143,9 @@ class BirdeyeTradeCollector:
             if not token_address or len(token_address) < 32:
                 logger.error(f"❌ Invalid Solana mint passed: {token_address}")
                 return []
+            # 🚨 Ensure limit is within Birdeye's allowed range (1–50)
+            limit = int(limit)               # make sure it's an integer
+            limit = max(1, min(limit, 50))   # clamp to [1, 50]
             # Build the request parameters
             params = {
                 'address': token_address,
