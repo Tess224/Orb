@@ -2217,15 +2217,15 @@ def tracking_status():
         }), 500
 
 
+
 @app.route('/tracking/start', methods=['POST'])
 def start_tracking():
     """
     Start tracking a token in real-time.
-    
     Request body should be:
     {
-        "token_address": "TokenAddressHere",
-        "access_code": "YourAccessCode"
+      "token_address": "TokenAddressHere",
+      "access_code": "YourAccessCode"
     }
     
     We'll automatically find the pool address for you.
@@ -2255,24 +2255,24 @@ def start_tracking():
             }), 429
         
         # Check if polling system is active
-        if not polling_collector or not metrics_manager:
+        if not birdeye_collector or not metrics_manager:
             return jsonify({
                 'error': 'Real-time tracking system not initialized',
-                'message': 'Make sure HELIUS_API_KEY is set in environment variables',
+                'message': 'Make sure BIRDEYE_API_KEY is set in environment variables',
                 'status': 'error'
             }), 503
         
         # Get liquidity data
-                logger.info(f"   Fetching liquidity data...")
-                liq_data = get_token_liquidity_simple(token_address)
+        logger.info(f"   Fetching liquidity data...")
+        liq_data = get_token_liquidity_simple(token_address)
         
         # CHANGED: No longer need to find pool address - Birdeye uses token address directly
         
         # Start tracking
-                success = start_tracking_token_realtime(
-                    token_address,
-                    liq_data['liquidity_usd']
-                )
+        success = start_tracking_token_realtime(
+            token_address,
+            liq_data['liquidity_usd']
+        )
         
         # Debug logging - see what MetricsManager looks like right after tracking started
         logger.info("=" * 70)
@@ -2285,29 +2285,29 @@ def start_tracking():
         else:
             logger.info("MetricsManager is None!")
         logger.info("=" * 70)
-
-
+        
         if success:
-                    increment_usage(access_code)
-                    return jsonify({
-                        'status': 'success',
-                        'message': f'Started tracking {token_address[:8]}...',
-                        'token_address': token_address,
-                        'liquidity_usd': liq_data['liquidity_usd'],
-                        'timestamp': int(time.time())
-                    }), 200
+            increment_usage(access_code)
+            return jsonify({
+                'status': 'success',
+                'message': f'Started tracking {token_address[:8]}...',
+                'token_address': token_address,
+                'liquidity_usd': liq_data['liquidity_usd'],
+                'timestamp': int(time.time())
+            }), 200
         else:
             return jsonify({
                 'error': 'Failed to start tracking',
                 'status': 'error'
             }), 500
-            
+    
     except Exception as e:
         logger.error(f"❌ Error in start_tracking: {e}")
         return jsonify({
             'error': str(e),
             'status': 'error'
         }), 500
+
 
 @app.route('/tracking/stop', methods=['POST'])
 def stop_tracking():
