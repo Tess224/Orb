@@ -1668,43 +1668,35 @@ def analyze_velocity(liquidity_usd: float, volume_24h_usd: float) -> Dict:
 def run_polling_loop(api_key: str):
     """
     This function runs in a separate background thread.
-    It handles all the async polling operations.
+    It handles all the async polling operations using Birdeye API.
     
-    Think of this as a separate worker that runs alongside your Flask server,
-    periodically checking for new trades every 2 minutes instead of getting
-    real-time notifications. The trade-off is lower costs for slightly delayed
-    data, but since your metrics work on 5-minute, 15-minute, and hourly windows,
-    a 2-minute delay doesn't materially affect accuracy.
+    CHANGED FROM HELIUS: Now uses Birdeye's /defi/txs/token endpoint which
+    provides pre-parsed trade data instead of raw transactions.
     """
-    global polling_collector, metrics_manager, polling_loop
+    global birdeye_collector, metrics_manager, polling_loop
     
     try:
-        logger.info("🚀 Starting polling background thread...")
+        logger.info("🚀 Starting Birdeye polling background thread...")
         
         # Create a new event loop for this thread
-        # Each thread needs its own event loop for async operations
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         polling_loop = loop
         
-        # Create the polling collector with 2-minute interval
-        # You can adjust this: 120 seconds = cheap but 2-min delay
-        #                      60 seconds = 2x cost but 1-min delay
-        #                      180 seconds = cheaper but 3-min delay
-        polling_collector = PollingTradeCollector(api_key, poll_interval_seconds=120)
+        # Create the Birdeye collector with 2-minute interval
+        birdeye_collector = BirdeyeTradeCollector(api_key, poll_interval_seconds=120)
         
         # Create the metrics manager if it doesn't exist yet
         if metrics_manager is None:
             metrics_manager = MetricsManager()
         
-        # Connect the two: when polling collector finds a trade, send it to metrics manager
-        polling_collector.add_trade_callback(metrics_manager.handle_trade)
+        # Connect the two: when Birdeye collector finds a trade, send it to metrics manager
+        birdeye_collector.register_callback(metrics_manager.handle_trade)
         
         # Define an async function to start the polling system
         async def start_polling():
-            logger.info("✅ Polling collector starting, will check for trades every 120 seconds...")
-            # This will run forever until an error occurs or we stop it
-            await polling_collector.start()
+            logger.info("✅ Birdeye collector starting, will check for trades every 120 seconds...")
+            await birdeye_collector.start()
         
         # Run the polling system
         try:
@@ -1723,7 +1715,6 @@ def run_polling_loop(api_key: str):
         import traceback
         logger.error(traceback.format_exc())
     finally:
-        # Only close when the entire thread is shutting down
         logger.info("🔌 Closing polling event loop")
         if polling_loop:
             polling_loop.close()
@@ -1731,175 +1722,79 @@ def run_polling_loop(api_key: str):
 
 def start_polling_background():
     """
-    Start the polling system in a background thread.
-    This gets called when your Flask app starts up.
+    Start the Birdeye polling system in a background thread.
     
-    The polling system will check for new trades every 2 minutes instead of
-    getting instant notifications. This dramatically reduces API costs while
-    still providing reasonably fresh data for your metrics calculations.
+    CHANGED FROM HELIUS: Now uses Birdeye API for trade data collection.
     """
     global polling_thread
     
-    # Get Helius API key from environment
-    helius_api_key = os.environ.get('HELIUS_API_KEY')
-    
-    if not helius_api_key:
-        logger.warning("⚠️ HELIUS_API_KEY not found - real-time monitoring will not work")
+    # Get Birdeye API key from environment
+    birdeye_api_key = os.environ.get('BIRDEYE_API_KEY')
+    if not birdeye_api_key:
+        logger.warning("⚠️ BIRDEYE_API_KEY not found - real-time monitoring will not work")
         logger.warning("⚠️ Set it in your environment variables to enable real-time features")
         return
     
-    logger.info("🔧 Starting polling background thread...")
+    logger.info("🔧 Starting Birdeye polling background thread...")
     
     # Create and start the thread
     polling_thread = threading.Thread(
         target=run_polling_loop,
-        args=(helius_api_key,),
+        args=(birdeye_api_key,),
         daemon=True  # Thread will close when main program exits
     )
     polling_thread.start()
-    
-    logger.info("✅ Polling thread started successfully")
+    logger.info("✅ Birdeye polling thread started successfully")
     
     # Give it a moment to initialize
     time.sleep(2)
 
 
-def add_pool_to_polling(pool_address: str, token_address: str, token_symbol: str = "UNKNOWN"):
+def add_token_to_polling(token_address: str, token_symbol: str = "UNKNOWN"):
     """
-    Add a pool to the polling collector from synchronous Flask code.
+    Add a token to the Birdeye polling collector.
     
-    This is simpler than the old WebSocket version because we don't need to
-    schedule coroutines across threads. We just call a regular method on the
-    polling collector that adds the pool to its monitoring list.
+    CHANGED FROM HELIUS: Birdeye uses token addresses directly, not pool addresses.
+    The Birdeye API tracks trades by token mint address across all DEXs.
     
     Args:
-        pool_address: The pool address to monitor
         token_address: The token's mint address
         token_symbol: Optional symbol for logging
-        
+    
     Returns:
         bool: True if successfully added, False otherwise
     """
-    global polling_collector
+    global birdeye_collector
     
-    if not polling_collector:
-        logger.warning("⚠️ Cannot add pool - polling collector not initialized")
+    if not birdeye_collector:
+        logger.warning("⚠️ Cannot add token - Birdeye collector not initialized")
         return False
     
     try:
-        # This is a simple synchronous call - much easier than the WebSocket version!
-        polling_collector.add_pool(pool_address, token_address, token_symbol)
-        logger.info(f"✅ Added pool {pool_address[:8]}... to polling collector")
+        birdeye_collector.add_token(token_address, token_symbol)
+        logger.info(f"✅ Added token {token_address[:8]}... to Birdeye collector")
         return True
-        
     except Exception as e:
-        logger.error(f"❌ Error adding pool to collector: {e}")
+        logger.error(f"❌ Error adding token to Birdeye collector: {e}")
         return False
         
 
-def get_raydium_pool_address(token_address: str) -> Optional[str]:
+def start_tracking_token_realtime(token_address: str, liquidity_usd: float):
     """
-    Find the pool address for a token using Birdeye, with detailed debugging.
-    """
-    try:
-        if not BIRDEYE_API_KEY:
-            logger.warning("⚠️ BIRDEYE_API_KEY not set, can't find pool address")
-            return None
-        
-        # Use Birdeye's market list endpoint
-        url = f"https://public-api.birdeye.so/defi/v2/markets"
-        params = {'address': token_address}
-        headers = {'X-API-KEY': BIRDEYE_API_KEY}
-        
-        logger.info(f"🔍 Looking for pool for token {token_address[:8]}...")
-        
-        response = requests.get(url, params=params, headers=headers, timeout=10)
-        
-        # Debug: Log the response status
-        logger.info(f"  Birdeye response status: {response.status_code}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            # Debug: Log the raw response structure
-            logger.info(f"  Response success: {data.get('success')}")
-            logger.info(f"  Response has data: {bool(data.get('data'))}")
-            
-            if data.get('success') and data.get('data'):
-                markets = data['data'].get('items', [])
-                
-                logger.info(f"  Found {len(markets)} markets total")
-                
-                if not markets:
-                    logger.warning(f"⚠️ No markets found for {token_address[:8]}")
-                    return None
-                
-                # Debug: Log ALL markets we found
-                for i, m in enumerate(markets):
-                    logger.info(f"    Market {i+1}:")
-                    logger.info(f"      - Source: {m.get('source')}")
-                    logger.info(f"      - Address: {m.get('address', 'N/A')[:16]}...")
-                    logger.info(f"      - Liquidity: ${m.get('liquidity', 0):,.0f}")
-                    logger.info(f"      - Type: {m.get('type', 'N/A')}")
-                
-                # Try to find ANY pool - be very flexible
-                # Just take the one with the most liquidity
-                if markets:
-                    # Sort by liquidity
-                    markets.sort(key=lambda x: x.get('liquidity', 0), reverse=True)
-                    
-                    # Take the pool with highest liquidity
-                    best_pool = markets[0]
-                    pool_addr = best_pool.get('address')
-                    
-                    if pool_addr:
-                        source = best_pool.get('source', 'Unknown')
-                        liq = best_pool.get('liquidity', 0)
-                        logger.info(f"✅ Selected highest liquidity pool:")
-                        logger.info(f"   Address: {pool_addr[:16]}...")
-                        logger.info(f"   Source: {source}")
-                        logger.info(f"   Liquidity: ${liq:,.0f}")
-                        return pool_addr
-                    else:
-                        logger.warning(f"⚠️ Market found but no address field")
-        
-        else:
-            logger.error(f"❌ Birdeye API error: Status {response.status_code}")
-            logger.error(f"   Response: {response.text[:200]}")
-        
-        logger.warning(f"⚠️ Could not find any pool for {token_address[:8]}")
-        return None
-        
-    except Exception as e:
-        logger.error(f"❌ Error finding pool: {e}")
-        import traceback
-        logger.error(f"   Traceback: {traceback.format_exc()}")
-        return None
-        
-
-
-def start_tracking_token_realtime(token_address: str, pool_address: str, liquidity_usd: float):
-    """
-    Start tracking a token in real-time using the polling system.
+    Start tracking a token in real-time using the Birdeye polling system.
     
-    This tells the polling collector to watch this token's pool and tells the
-    metrics manager to start calculating metrics for it.
-    
-    The "real-time" is a bit of a misnomer now - there's a 2-minute delay between
-    when trades happen and when we see them. But for metrics that aggregate over
-    5-minute, 15-minute, and hourly windows, this delay is negligible.
+    CHANGED FROM HELIUS: No longer needs pool_address - Birdeye tracks by token address.
     
     Args:
         token_address: Token's mint address
-        pool_address: Pool's address on Raydium
         liquidity_usd: Current pool liquidity in USD
-        
+    
     Returns:
         bool: True if successfully started tracking
     """
-    global polling_collector, metrics_manager
+    global birdeye_collector, metrics_manager
     
-    if not polling_collector or not metrics_manager:
+    if not birdeye_collector or not metrics_manager:
         logger.warning("⚠️ Real-time system not initialized - can't start tracking")
         return False
     
@@ -1907,25 +1802,22 @@ def start_tracking_token_realtime(token_address: str, pool_address: str, liquidi
         # Add to metrics manager first
         metrics_manager.add_token(token_address, liquidity_usd)
         
-        # Store the mapping for later reference
-        token_to_pool_map[token_address] = pool_address
+        # Store the token symbol mapping
+        token_to_address_map[token_address] = token_address[:8]
         
-        # Add the pool to the polling collector
-        # The token address is shortened to 8 chars for use as a symbol
-        subscription_success = add_pool_to_polling(
-            pool_address, 
-            token_address, 
+        # Add the token to the Birdeye collector
+        subscription_success = add_token_to_polling(
+            token_address,
             token_address[:8]  # Use first 8 chars as symbol
         )
         
         if not subscription_success:
-            logger.warning("⚠️ Failed to add pool to polling collector")
+            logger.warning("⚠️ Failed to add token to Birdeye collector")
             return False
         
         logger.info(f"✅ Started tracking for {token_address[:8]}...")
-        logger.info(f"   Pool: {pool_address[:8]}...")
         logger.info(f"   Liquidity: ${liquidity_usd:,.0f}")
-        logger.info(f"   📊 Trades will be collected every 120 seconds")
+        logger.info(f"   📊 Trades will be collected every 120 seconds via Birdeye")
         
         return True
         
@@ -2371,26 +2263,17 @@ def start_tracking():
             }), 503
         
         # Get liquidity data
-        logger.info(f"  Fetching liquidity data...")
-        liq_data = get_token_liquidity_simple(token_address)
+                logger.info(f"   Fetching liquidity data...")
+                liq_data = get_token_liquidity_simple(token_address)
         
-        # Find the pool address
-        logger.info(f"  Finding Raydium pool...")
-        pool_address = get_raydium_pool_address(token_address)
-        
-        if not pool_address:
-            return jsonify({
-                'error': 'Could not find Raydium pool for this token',
-                'message': 'Token might not have a Raydium pool or Birdeye data unavailable',
-                'status': 'error'
-            }), 404
+        # CHANGED: No longer need to find pool address - Birdeye uses token address directly
         
         # Start tracking
-        success = start_tracking_token_realtime(
-            token_address,
-            pool_address,
-            liq_data['liquidity_usd']
-        )
+                success = start_tracking_token_realtime(
+                    token_address,
+                    liq_data['liquidity_usd']
+                )
+        
         # Debug logging - see what MetricsManager looks like right after tracking started
         logger.info("=" * 70)
         logger.info("📊 DEBUG: After start_tracking_token_realtime")
@@ -2405,15 +2288,14 @@ def start_tracking():
 
 
         if success:
-            increment_usage(access_code)
-            return jsonify({
-                'status': 'success',
-                'message': f'Started tracking {token_address[:8]}...',
-                'token_address': token_address,
-                'pool_address': pool_address,
-                'liquidity_usd': liq_data['liquidity_usd'],
-                'timestamp': int(time.time())
-            }), 200
+                    increment_usage(access_code)
+                    return jsonify({
+                        'status': 'success',
+                        'message': f'Started tracking {token_address[:8]}...',
+                        'token_address': token_address,
+                        'liquidity_usd': liq_data['liquidity_usd'],
+                        'timestamp': int(time.time())
+                    }), 200
         else:
             return jsonify({
                 'error': 'Failed to start tracking',
@@ -2475,13 +2357,10 @@ def stop_tracking():
         metrics_manager.remove_token(token_address)
         logger.info(f"✅ Removed {token_address[:8]} from MetricsManager")
         
-        # Remove from token-to-pool mapping
-        if token_address in token_to_pool_map:
-            pool_address = token_to_pool_map[token_address]
-            del token_to_pool_map[token_address]
-            logger.info(f"✅ Removed pool mapping for {token_address[:8]}")
-        else:
-            pool_address = None
+        # Remove from token mapping
+                if token_address in token_to_address_map:
+                    del token_to_address_map[token_address]
+                    logger.info(f"✅ Removed token mapping for {token_address[:8]}")
         
         # TODO: Ideally we'd also unsubscribe from the WebSocket here
         # but that would require adding an unsubscribe method to the WebSocket client
@@ -2489,12 +2368,12 @@ def stop_tracking():
         # will ignore it since the token is no longer in trackers
         
         return jsonify({
-            'success': True,
-            'message': f'Stopped tracking {token_address[:8]}',
-            'token_address': token_address,
-            'pool_address': pool_address,
-            'timestamp': int(time.time())
-        }), 200
+                    'success': True,
+                    'message': f'Stopped tracking {token_address[:8]}',
+                    'token_address': token_address,
+                    'timestamp': int(time.time())
+                }), 200
+    
         
     except Exception as e:
         logger.error(f"❌ Error in stop_tracking: {e}")
