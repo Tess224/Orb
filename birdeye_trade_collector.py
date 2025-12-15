@@ -139,6 +139,10 @@ class BirdeyeTradeCollector:
             List of trade objects from Birdeye
         """
         try:
+            # 🚨 Validate token mint early (prevents 400s)
+            if not token_address or len(token_address) < 32:
+                logger.error(f"❌ Invalid Solana mint passed: {token_address}")
+                return []
             # Build the request parameters
             params = {
                 'address': token_address,
@@ -180,9 +184,10 @@ class BirdeyeTradeCollector:
                     logger.warning(f"⚠️ Rate limited by Birdeye API")
                     return []
                 else:
-                    error_text = await response.text()  
-                    # 👈 ADD THIS
-                    logger.warning(f"HTTP {response.status} when fetching trades for {token_address[:8]}")
+                    error_text = await response.text()
+                    logger.warning(
+                        f"HTTP {response.status} | {token_address} | {error_text}"
+                    )
                     return []
                     
         except asyncio.TimeoutError:
