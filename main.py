@@ -2195,8 +2195,7 @@ def tracking_status():
             
             status['tracked_tokens'] = [
                 {
-                    'token_address': addr,
-                    'pool_address': token_to_pool_map.get(addr, 'Unknown')
+                    'token_address': addr
                 }
                 for addr in tracked
             ]
