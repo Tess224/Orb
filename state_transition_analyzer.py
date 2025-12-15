@@ -379,6 +379,60 @@ class StateTransitionAnalyzer:
             'reason': 'no_transitions',
             'message': f'No transitions found from phase: {current_phase}'
         }
+
+    def get_transition_probabilities(self, current_phase: str) -> dict:
+        """
+        Get transition probabilities for a given phase.
+    
+        This is a simplified interface used by the realtime metrics system
+        to fetch probability distributions without needing full metrics.
+    
+        Args:
+            current_phase: The current phase to get predictions for
+        
+        Returns:
+            Dictionary with:
+            - next_phase_probabilities: Dict mapping phases to probabilities
+            - confidence: Overall confidence in predictions (0-1)
+            - observations: Number of historical observations supporting this
+        """
+    # Check if we have a matrix at all
+        if not self.transition_matrix:
+            return {
+                'next_phase_probabilities': {},
+                'confidence': 0.0,
+                'observations': 0
+            }
+    
+    # Check if we have data for this specific phase
+        if current_phase not in self.transition_matrix:
+            return {
+                'next_phase_probabilities': {},
+                'confidence': 0.0,
+                'observations': 0
+            }
+    
+    # Get the transition data for this phase
+        transitions = self.transition_matrix[current_phase]
+    
+    # Build a simple probability dictionary
+        probabilities = {}
+        total_observations = 0
+    
+        for next_phase, data in transitions.items():
+            probabilities[next_phase] = data['probability']
+        # Use sample_size from the first entry as total observations
+            if total_observations == 0:
+                total_observations = data.get('sample_size', 0)
+    
+    # Get observation count for this specific state if we have it
+        observations = self.observation_counts.get(current_phase, total_observations)
+    
+        return {
+            'next_phase_probabilities': probabilities,
+            'confidence': self.confidence_score,
+            'observations': observations
+        }
     
     def get_debug_info(self) -> dict:
         """
