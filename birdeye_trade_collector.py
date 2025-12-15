@@ -150,6 +150,7 @@ class BirdeyeTradeCollector:
             
             headers = {
                 'X-API-KEY': self.api_key,
+                'chain': 'solana',
                 'accept': 'application/json'
             }
             
