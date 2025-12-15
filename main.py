@@ -52,10 +52,11 @@ wallet_analysis_cache: Dict[str, Dict] = {}
 # Structure: {'ACCESS-CODE': {'count': 5, 'reset_time': 1234567890}}
 rate_limit_storage: Dict[str, Dict] = {}
 # NEW GLOBALS FOR REAL-TIME SYSTEM
-polling_collector: Optional[PollingTradeCollector] = None
+# CHANGED: Now using Birdeye collector instead of Helius
+birdeye_collector: Optional[BirdeyeTradeCollector] = None
 metrics_manager: Optional[MetricsManager] = None
 polling_thread: Optional[threading.Thread] = None
-token_to_pool_map: Dict[str, str] = {}
+token_to_address_map: Dict[str, str] = {}  # Maps token_address -> token_symbol
 polling_loop = None  # Will hold the polling collector's event loop
 state_analyzer = None
 
