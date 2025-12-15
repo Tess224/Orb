@@ -41,7 +41,7 @@ class BirdeyeTradeCollector:
     when new trades arrive.
     """
 
-    def __init__(self, birdeye_api_key: str, poll_interval_seconds: int = 120):
+    def __init__(self, birdeye_api_key: str, poll_interval_seconds: int = 30):
         """
         Initialize the Birdeye trade collector.
         
@@ -149,7 +149,6 @@ class BirdeyeTradeCollector:
             # Build the request parameters
             params = {
                 'address': token_address,
-                'tx_type': 'swap',  # Only get swap transactions
                 'sort_type': 'desc',  # Most recent first
                 'offset': 0,
                 'limit': limit
