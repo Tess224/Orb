@@ -18,7 +18,7 @@ import threading
 from solana.rpc.api import Client
 from solders.pubkey import Pubkey
 from solders.signature import Signature
-from polling_trade_collector import PollingTradeCollector
+from birdeye_trade_collector import BirdeyeTradeCollector
 from realtime_metrics import MetricsManager, MetricsSnapshot
 from signal_fusion import signal_fusion, FusedSignal, SignalDirection, SignalUrgency
 logging.basicConfig(
