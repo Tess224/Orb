@@ -736,8 +736,36 @@ class TokenMetricsTracker:
             return
     
     # Validation passed - proceed with your existing logic
-        try:
-            logger.info(f"✅ TRADE ACCEPTED for {self.token_address[:8]}: ${trade_data['size_usd']:.2f} {trade_data['direction'].upper()}")
+    try:
+    # DUPLICATE PREVENTION: Extract signature and check if we've seen this trade
+        trade_sig = trade_data.get('transaction_signature', '')
+    
+    # SAFETY CHECK: Ensure signature is a string (not a dict)
+        if isinstance(trade_sig, dict):
+            trade_sig = trade_sig.get('signature', '') or trade_sig.get('sig', '') or str(trade_sig)
+        elif not isinstance(trade_sig, str):
+            trade_sig = str(trade_sig) if trade_sig else ''
+    
+    # Initialize processed_trades set if it doesn't exist
+        if not hasattr(self, 'processed_trades'):
+            self.processed_trades = set()
+    
+    # Skip if we've already processed this exact trade
+        if trade_sig and trade_sig in self.processed_trades:
+            logger.debug(f"  ⏭️ Skipping duplicate trade {trade_sig[:8]}")
+            return
+    
+        logger.info(f"✅ TRADE ACCEPTED for {self.token_address[:8]}: ${trade_data['size_usd']:.2f} {trade_data['direction'].upper()}")
+    
+    # Add to processed set
+        if trade_sig:
+            self.processed_trades.add(trade_sig)
+        
+        # Cleanup: keep only last 1000 signatures to prevent memory bloat
+            if len(self.processed_trades) > 1000:
+            # Convert to list, keep newest 500
+                sigs_list = list(self.processed_trades)
+                self.processed_trades = set(sigs_list[-500:])
     
             trade = Trade(
                 timestamp=trade_data['timestamp'],
