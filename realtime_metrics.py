@@ -712,7 +712,7 @@ class TokenMetricsTracker:
     def add_trade(self, trade_data: Dict):
         """
         Process a new trade and update all metrics.
-        
+    
         Now includes comprehensive validation to catch bad data before it corrupts our metrics.
         """
     # VALIDATION FIRST - before we do anything else
@@ -736,37 +736,39 @@ class TokenMetricsTracker:
             return
     
     # Validation passed - proceed with your existing logic
-    try:
-    # DUPLICATE PREVENTION: Extract signature and check if we've seen this trade
-        trade_sig = trade_data.get('transaction_signature', '')
-    
-    # SAFETY CHECK: Ensure signature is a string (not a dict)
-        if isinstance(trade_sig, dict):
-            trade_sig = trade_sig.get('signature', '') or trade_sig.get('sig', '') or str(trade_sig)
-        elif not isinstance(trade_sig, str):
-            trade_sig = str(trade_sig) if trade_sig else ''
-    
-    # Initialize processed_trades set if it doesn't exist
-        if not hasattr(self, 'processed_trades'):
-            self.processed_trades = set()
-    
-    # Skip if we've already processed this exact trade
-        if trade_sig and trade_sig in self.processed_trades:
-            logger.debug(f"  ⏭️ Skipping duplicate trade {trade_sig[:8]}")
-            return
-    
-        logger.info(f"✅ TRADE ACCEPTED for {self.token_address[:8]}: ${trade_data['size_usd']:.2f} {trade_data['direction'].upper()}")
-    
-    # Add to processed set
-        if trade_sig:
-            self.processed_trades.add(trade_sig)
+        try:
+        # DUPLICATE PREVENTION: Extract signature and check if we've seen this trade
+            trade_sig = trade_data.get('transaction_signature', '')
         
-        # Cleanup: keep only last 1000 signatures to prevent memory bloat
-            if len(self.processed_trades) > 1000:
-            # Convert to list, keep newest 500
-                sigs_list = list(self.processed_trades)
-                self.processed_trades = set(sigs_list[-500:])
-    
+        # SAFETY CHECK: Ensure signature is a string (not a dict)
+            if isinstance(trade_sig, dict):
+                trade_sig = trade_sig.get('signature', '') or trade_sig.get('sig', '') or str(trade_sig)
+            elif not isinstance(trade_sig, str):
+                trade_sig = str(trade_sig) if trade_sig else ''
+        
+        # Initialize processed_trades set if it doesn't exist
+            if not hasattr(self, 'processed_trades'):
+                self.processed_trades = set()
+        
+        # Skip if we've already processed this exact trade
+            if trade_sig and trade_sig in self.processed_trades:
+                logger.debug(f"  ⏭️ Skipping duplicate trade {trade_sig[:8]}")
+                return
+        
+            logger.info(f"✅ TRADE ACCEPTED for {self.token_address[:8]}: ${trade_data['size_usd']:.2f} {trade_data['direction'].upper()}")
+        
+        # Add to processed set
+            if trade_sig:
+                self.processed_trades.add(trade_sig)
+            
+            # Cleanup: keep only last 1000 signatures to prevent memory bloat
+                if len(self.processed_trades) > 1000:
+                # Convert to list, keep newest 500
+                    sigs_list = list(self.processed_trades)
+                    self.processed_trades = set(sigs_list[-500:])
+        
+        # THIS IS THE KEY FIX: These lines should NOT be inside the "if trade_sig:" block
+        # They should be at the same indentation level as the "if trade_sig:" line
             trade = Trade(
                 timestamp=trade_data['timestamp'],
                 direction=trade_data['direction'],
@@ -776,8 +778,8 @@ class TokenMetricsTracker:
                 size_usd=trade_data['size_usd'],
                 transaction_signature=trade_data['transaction_signature']
             )
-            
-            # Add to ALL time windows
+        
+        # Add to ALL time windows
             self.trades_30s.append(trade)
             self.trades_1m.append(trade)
             self.trades_2m.append(trade)
@@ -787,37 +789,37 @@ class TokenMetricsTracker:
             self.trades_1h.append(trade)
             self.trades_4h.append(trade)
             self.trades_24h.append(trade)
-            
+        
             self.total_trades += 1
             self._cleanup_old_trades()
-            
-            # Record hourly volumes
+        
+        # Record hourly volumes
             current_time = time.time()
             if current_time - self.last_hourly_record >= 3600:
                 metrics_1h = self._calculate_volume_metrics(self.trades_1h)
                 self.hourly_volume_history.append(metrics_1h['total_volume'])
                 self.last_hourly_record = current_time
-            
-            # Take snapshot every minute
+        
+        # Take snapshot every minute
             if current_time - self.last_snapshot_time >= 60:
                 logger.info(f"📸 TAKING SNAPSHOT for {self.token_address[:8]} (age: {self.get_token_age_hours():.1f}h)")
                 self._take_snapshot()
                 self.last_snapshot_time = current_time
                 logger.info(f"✅ SNAPSHOT COMPLETE")
-                # Return pending transitions so MetricsManager can log them
+            # Return pending transitions so MetricsManager can log them
                 if hasattr(self, 'pending_transitions') and self.pending_transitions:
                     return self.pending_transitions
-                    
+        
             if trade.size_usd >= 1000:
                 logger.info(
                     f"💰 Large {trade.direction.upper()}: ${trade.size_usd:,.0f} "
                     f"on {self.token_address[:8]}... (age: {self.get_token_age_hours():.1f}h)"
                 )
-        
+    
         except Exception as e:
             logger.error(f"❌ Error processing trade: {e}")
-
-
+        
+        
     def _calculate_volume_metrics(self, trades: Deque[Trade]) -> Dict:
         """
         Calculate volume metrics with trade size distribution analysis.
