@@ -814,7 +814,7 @@ class TokenMetricsTracker:
                     f"on {self.token_address[:8]}... (age: {self.get_token_age_hours():.1f}h)"
                 )
         
-        except Exception as e:
+        except Exception as :
             logger.error(f"❌ Error processing trade: {e}")
 
 
