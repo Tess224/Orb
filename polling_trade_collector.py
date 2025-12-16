@@ -1,5 +1,5 @@
 """
-Efficient Polling-Based Trade Collector for Helius Free Tier
+Effficient Polling-Based Trade Collector for Helius Free Tier
 
 This approach minimizes API calls by:
 1. Polling for new transactions every 2 minutes using Helius's transaction history API
