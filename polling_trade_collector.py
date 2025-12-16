@@ -401,13 +401,24 @@ class PollingTradeCollector:
             self.stats['transactions_fetched'] += len(transactions)
             logger.info(f"  📥 Fetched {len(transactions)} transactions from Helius")
             
-            # Filter to only new signatures we haven't processed
             new_transactions = []
             for tx in transactions:
                 sig = tx.get('signature', '')
+    
+    # SAFETY CHECK: Ensure signature is a string
+    # Sometimes APIs return signature as a dict or other structure
+                if isinstance(sig, dict):
+        # If it's a dict, try to extract the actual signature string
+                    sig = sig.get('signature', '') or sig.get('sig', '') or str(sig)
+                elif not isinstance(sig, str):
+        # If it's some other type, convert to string
+                    sig = str(sig) if sig else ''
+    
+    # Only process if we have a valid signature string
                 if sig and sig not in self.processed_signatures[pool_address]:
                     new_transactions.append(tx)
                     self.processed_signatures[pool_address].add(sig)
+            
             
             if not new_transactions:
                 logger.info(f"  ℹ️ All transactions already processed (0 new out of {len(transactions)} total)")
