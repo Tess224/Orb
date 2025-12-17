@@ -1473,40 +1473,109 @@ class TokenMetricsTracker:
 
         if len(self.metric_history) > 1440:
             self.metric_history.pop(0)
-        # NEW CODE: Check for phase transitions
+        # NEW APPROACH: Log state progression at multiple triggers (not just phase changes)
+        # This creates much more training data for the transition matrix
         if len(self.metric_history) >= 2:
             previous_snapshot = self.metric_history[-2]
             old_phase = previous_snapshot.phase
             new_phase = phase
             
+            duration = current_time - previous_snapshot.timestamp
+            
+            # Determine if this is significant enough to log
+            # We log if ANY of these conditions are met:
+            should_log = False
+            log_reason = []
+            
+            # 1. Phase actually changed (traditional transition)
             if old_phase != new_phase:
-                # Phase change detected!
-                duration = current_time - previous_snapshot.timestamp
-                
+                should_log = True
+                log_reason.append(f"phase_change:{old_phase}→{new_phase}")
+            
+            # 2. Significant VTS change (>20% change)
+            vts_change_pct = abs(vts - previous_snapshot.vts) / max(previous_snapshot.vts, 0.1)
+            if vts_change_pct > 0.2:
+                should_log = True
+                log_reason.append(f"vts_shift:{previous_snapshot.vts:.1f}→{vts:.1f}")
+            
+            # 3. Significant pressure reversal (PII changed sign or >50% magnitude change)
+            pii_changed_sign = (previous_snapshot.pii * pii < 0)
+            pii_change_pct = abs(pii - previous_snapshot.pii) / max(abs(previous_snapshot.pii), 0.01)
+            if pii_changed_sign or pii_change_pct > 0.5:
+                should_log = True
+                log_reason.append(f"pressure_shift:{previous_snapshot.pii:.2f}→{pii:.2f}")
+            
+            # 4. Large volume spike (VTS crossed threshold of 2.0)
+            if vts > 2.0 and previous_snapshot.vts < 2.0:
+                should_log = True
+                log_reason.append("volume_spike")
+            
+            # 5. Exhaustion warning (VEI dropped below 0.3)
+            if vei < 0.3 and previous_snapshot.vei >= 0.3:
+                should_log = True
+                log_reason.append("exhaustion_entered")
+            
+            # 6. Recovery from exhaustion (VEI rose above 0.5)
+            if vei > 0.5 and previous_snapshot.vei <= 0.5:
+                should_log = True
+                log_reason.append("recovery")
+            
+            # 7. Buy/Sell ratio flipped significantly (crossed 1.0 threshold)
+            if (previous_snapshot.bsr_1h < 1.0 and bsr_1h > 1.2) or \
+               (previous_snapshot.bsr_1h > 1.0 and bsr_1h < 0.8):
+                should_log = True
+                log_reason.append(f"bsr_flip:{previous_snapshot.bsr_1h:.2f}→{bsr_1h:.2f}")
+            
+            # 8. Time-based: log every 5 minutes regardless (to capture stable states)
+            # This ensures we learn about "staying in the same state"
+            if duration >= 300:  # 5 minutes
+                should_log = True
+                log_reason.append("time_interval")
+            
+            if should_log:
                 logger.info("=" * 70)
-                logger.info(f"🔄 PHASE TRANSITION DETECTED for {self.token_address[:8]}...")
-                logger.info(f"   FROM: {old_phase}")
-                logger.info(f"   TO:   {new_phase}")
-                logger.info(f"   Duration in {old_phase}: {duration:.0f}s ({duration/60:.1f}m)")
+                logger.info(f"📊 STATE TRANSITION for {self.token_address[:8]}...")
+                logger.info(f"   Reasons: {', '.join(log_reason)}")
+                logger.info(f"   FROM: {old_phase} (VTS={previous_snapshot.vts:.1f}, PII={previous_snapshot.pii:.2f}, VEI={previous_snapshot.vei:.2f})")
+                logger.info(f"   TO:   {new_phase} (VTS={vts:.1f}, PII={pii:.2f}, VEI={vei:.2f})")
+                logger.info(f"   Duration: {duration:.0f}s ({duration/60:.1f}m)")
                 logger.info("=" * 70)
                 
-                # Try to log to state analyzer through the manager
-                # We need to pass this up to MetricsManager which has the analyzer reference
-                # For now, store the transition info in a class variable
+                # Store the transition info for MetricsManager to log
                 if not hasattr(self, 'pending_transitions'):
                     self.pending_transitions = []
                 
                 self.pending_transitions.append({
                     'old_phase': old_phase,
                     'new_phase': new_phase,
+                    'old_metrics': {
+                        'vts': previous_snapshot.vts,
+                        'pii': previous_snapshot.pii,
+                        'vei': previous_snapshot.vei,
+                        'bsr': previous_snapshot.bsr_1h,
+                        'vlr': previous_snapshot.vlr_1h,
+                        'conviction_multiplier': previous_snapshot.conviction_multiplier,
+                        'token_age_hours': previous_snapshot.token_age_hours
+                    },
+                    'new_metrics': {
+                        'vts': vts,
+                        'pii': pii,
+                        'vei': vei,
+                        'bsr': bsr_1h,
+                        'vlr': vlr_1h,
+                        'conviction_multiplier': conviction_multiplier,
+                        'token_age_hours': age_hours
+                    },
                     'duration': duration,
-                    'snapshot': snapshot
+                    'snapshot': snapshot,
+                    'reasons': log_reason  # NEW: Include why we logged this
                 })
 
         logger.debug(
             f"📸 Snapshot: {self.token_address[:8]} (age: {age_hours:.1f}h) | "
             f"Phase={phase} VTS={vts:.2f} VEI={vei:.2f} PII={pii:.2f}"
         )
+                    
 
 
     def _classify_phase(self, vlr: float, vts: float, vei: float, 
