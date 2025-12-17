@@ -48,7 +48,87 @@ class StateTransitionAnalyzer:
         logger.info("🔧 Initializing state transition analyzer...")
         self._load_matrix()
         logger.info("🧠 State Transition Analyzer initialized")
+
+
+    def _create_state_key(self, phase: str, metrics: Dict) -> str:
+        """
+        Create a detailed state identifier that captures the current market situation.
     
+        Instead of just using phase names like 'early', we create rich descriptors like:
+        'early_surging_strong-buy_fresh'
+    
+        This allows the matrix to learn nuanced patterns like:
+        "When you're in early phase with surging volume and strong buy pressure,
+         you typically transition to mid phase 60% of the time"
+    
+        Args:
+            phase: Base phase name (dormant, early, mid, late, exhaustion)
+            metrics: Dictionary with vts, pii, vei, bsr, conviction_multiplier
+    
+        Returns:
+            Detailed state key string
+        """
+        vts = metrics.get('vts', 1.0)
+        pii = metrics.get('pii', 0.0)
+        vei = metrics.get('vei', 1.0)
+        bsr = metrics.get('bsr', 1.0)
+        conviction = metrics.get('conviction_multiplier', 1.0)
+    
+    # Volume trend descriptor
+        if vts > 3.0:
+            volume_desc = "surging"
+        elif vts > 2.0:
+            volume_desc = "spiking"
+        elif vts > 1.3:
+            volume_desc = "rising"
+        elif vts < 0.5:
+            volume_desc = "declining"
+        elif vts < 0.8:
+            volume_desc = "weakening"
+        else:
+            volume_desc = "stable"
+    
+    # Pressure descriptor (based on PII)
+        if pii > 0.3:
+            pressure_desc = "strong-buy"
+        elif pii > 0.1:
+            pressure_desc = "buy-pressure"
+        elif pii > 0.02:
+            pressure_desc = "slight-buy"
+        elif pii < -0.3:
+            pressure_desc = "strong-sell"
+        elif pii < -0.1:
+            pressure_desc = "sell-pressure"
+        elif pii < -0.02:
+            pressure_desc = "slight-sell"
+        else:
+            pressure_desc = "neutral"
+    
+    # Energy/Exhaustion descriptor (based on VEI)
+        if vei < 0.2:
+            energy_desc = "exhausted"
+        elif vei < 0.4:
+            energy_desc = "tired"
+        elif vei > 0.8:
+            energy_desc = "fresh"
+        elif vei > 0.6:
+            energy_desc = "energetic"
+        else:
+            energy_desc = "moderate"
+    
+    # Conviction quality descriptor
+        if conviction > 1.3:
+            conviction_desc = "strong-conviction"
+        elif conviction < 0.7:
+            conviction_desc = "weak-conviction"
+        else:
+            conviction_desc = "normal-conviction"
+    
+    # Combine into a rich state key
+    # Format: phase_volume_pressure_energy_conviction
+        state_key = f"{phase}_{volume_desc}_{pressure_desc}_{energy_desc}_{conviction_desc}"
+    
+        return state_key
     def _load_matrix(self):
         """Load existing transition matrix from disk if it exists."""
         if self.matrix_file.exists():
