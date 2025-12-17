@@ -235,136 +235,77 @@ class StateTransitionAnalyzer:
         except Exception as e:
             logger.error(f"❌ Error saving transitions: {e}")
     
-    def build_transition_matrix(self, min_observations: int = 5) -> dict:
+    def build_transition_matrix(self):
         """
-        Build the transition probability matrix from historical data.
-        Now includes detailed debug logging and confidence scoring.
-        
-        Args:
-            min_observations: Minimum number of transitions required to build matrix (default: 5)
-        
-        Returns:
-            Dictionary with matrix, confidence, and diagnostic info
+        Build transition probability matrix from logged transitions.
+    
+        Now uses detailed state keys instead of just phase names.
         """
-        logger.info("🔬 Starting transition matrix analysis...")
-        logger.info("📬 Building transition matrix from historical data...")
+        if len(self.transitions) < 2:
+            logger.warning("Not enough transitions to build matrix (need at least 2)")
+            self.confidence_score = 0.0
+            return
+    
+    # Count transitions between detailed states
+        transition_counts = {}
+        state_totals = {}
+    
+        for trans in self.transitions:
+            from_state = trans.get('from_state', trans['from_phase'])  # Use detailed state if available
+            to_state = trans.get('to_state', trans['to_phase'])
         
-        # Load all transitions
-        transitions = self._load_transitions()
-        total_transitions = len(transitions)
+        # Initialize nested dict if needed
+            if from_state not in transition_counts:
+                transition_counts[from_state] = {}
+                state_totals[from_state] = 0
         
-        logger.info(f"📊 Found {total_transitions} total transition records in history file")
+        # Count this transition
+            if to_state not in transition_counts[from_state]:
+                transition_counts[from_state][to_state] = 0
         
-        # Debug: Show sample of transitions
-        if total_transitions > 0:
-            logger.info("🔍 Sample transitions (first 3):")
-            for i, trans in enumerate(transitions[:3]):
-                logger.info(f"   [{i+1}] {trans.get('from_phase', 'UNKNOWN')} → {trans.get('to_phase', 'UNKNOWN')} "
-                          f"at {trans.get('timestamp', 'N/A')}")
-        
-        # Group transitions by token
-        token_transitions = defaultdict(list)
-        for trans in transitions:
-            token_addr = trans.get('token_address')
-            if token_addr:
-                token_transitions[token_addr].append(trans)
-        
-        num_tokens = len(token_transitions)
-        logger.info(f"🪙 Processed {num_tokens} unique tokens")
-        
-        # Debug: Show transitions per token
-        for token_addr, trans_list in list(token_transitions.items())[:3]:
-            logger.info(f"   Token {token_addr[:8]}... has {len(trans_list)} transitions")
-        
-        # Count transitions between states
-        transition_counts = defaultdict(lambda: defaultdict(int))
-        valid_transitions = 0
-        invalid_transitions = 0
-        
-        for trans in transitions:
-            from_phase = trans.get('from_phase')
-            to_phase = trans.get('to_phase')
-            
-            # Validate transition has required fields
-            if from_phase and to_phase and from_phase != to_phase:
-                transition_counts[from_phase][to_phase] += 1
-                valid_transitions += 1
-            else:
-                invalid_transitions += 1
-                logger.debug(f"⚠️ Invalid transition: {from_phase} → {to_phase}")
-        
-        logger.info(f"✅ Valid transitions: {valid_transitions}")
-        logger.info(f"❌ Invalid transitions (skipped): {invalid_transitions}")
-        
-        # Debug: Show what states were found
-        unique_states = set(transition_counts.keys())
-        logger.info(f"🎯 Found {len(unique_states)} distinct FROM states: {list(unique_states)}")
-        
-        # Show transition counts
-        logger.info("📈 Transition count breakdown:")
+            transition_counts[from_state][to_state] += 1
+            state_totals[from_state] += 1
+    
+    # Convert counts to probabilities
+        self.transition_matrix = {}
+    
         for from_state, to_states in transition_counts.items():
-            total_from = sum(to_states.values())
-            logger.info(f"   {from_state}: {total_from} transitions")
+            self.transition_matrix[from_state] = {}
+            total = state_totals[from_state]
+        
             for to_state, count in to_states.items():
-                logger.info(f"      → {to_state}: {count} times")
-        
-        # Determine confidence based on number of valid transitions
-        confidence = self._calculate_confidence(valid_transitions)
-        confidence_label = self._get_confidence_label(confidence)
-        
-        logger.info(f"🎲 Calculated confidence: {confidence:.1%} ({confidence_label})")
-        
-        # Don't build matrix if we have too few transitions
-        if valid_transitions < min_observations:
-            logger.warning(f"⚠️ Only {valid_transitions} valid transitions - need at least {min_observations} to build matrix")
-            logger.warning("   Continue tracking tokens to collect more transition data")
-            return {
-                'success': False,
-                'reason': 'insufficient_data',
-                'valid_transitions': valid_transitions,
-                'required_minimum': min_observations,
-                'message': f'Need at least {min_observations} valid transitions to build a matrix'
-            }
-        
-        # Build probability matrix
-        matrix = {}
-        for from_state, to_states in transition_counts.items():
-            total = sum(to_states.values())
-            matrix[from_state] = {}
+                probability = count / total if total > 0 else 0.0
             
-            for to_state, count in to_states.items():
-                probability = count / total
-                matrix[from_state][to_state] = {
+                self.transition_matrix[from_state][to_state] = {
                     'probability': probability,
-                    'count': count,
-                    'sample_size': total
+                    'sample_size': count,
+                    'total_observations': total
                 }
+    
+    # Calculate confidence score based on data quantity
+        total_transitions = len(self.transitions)
+        unique_states = len(self.transition_matrix)
+    
+        if total_transitions < 10:
+            self.confidence_score = 0.3
+        elif total_transitions < 50:
+            self.confidence_score = 0.5
+        elif total_transitions < 100:
+            self.confidence_score = 0.7
+        elif total_transitions < 200:
+            self.confidence_score = 0.85
+        else:
+            self.confidence_score = 0.95
+    
+    # Bonus for having diverse state observations
+        if unique_states > 10:
+            self.confidence_score = min(1.0, self.confidence_score + 0.05)
+    
+        logger.info(
+            f"✅ Transition matrix built: {unique_states} states, "
+            f"{total_transitions} transitions, confidence={self.confidence_score:.2f}"
+            )
         
-        # Store and save
-        self.transition_matrix = matrix
-        self.confidence_score = confidence
-        self.total_transitions = valid_transitions
-        # NEW: Populate observation counts for each state
-        self.observation_counts = {}
-        for from_state, to_states in transition_counts.items():
-            total = sum(to_states.values())
-            self.observation_counts[from_state] = total
-        
-        self._save_matrix()
-        
-        logger.info(f"✅ Built transition matrix with {len(matrix)} states")
-        logger.info(f"   Confidence: {confidence:.1%} ({confidence_label})")
-        logger.info(f"   Based on {valid_transitions} valid transitions")
-        
-        return {
-            'success': True,
-            'states': len(matrix),
-            'valid_transitions': valid_transitions,
-            'invalid_transitions': invalid_transitions,
-            'confidence': confidence,
-            'confidence_label': confidence_label,
-            'matrix': matrix
-        }
     
     def _calculate_confidence(self, num_transitions: int) -> float:
         """
