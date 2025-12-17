@@ -178,46 +178,43 @@ class StateTransitionAnalyzer:
         logger.info("💾 Transition matrix saved via public method")
     
     def log_transition(self, token_address: str, from_phase: str, to_phase: str, 
-                      metrics: dict, duration_seconds: float):
+                   metrics: Dict, duration_seconds: float):
         """
-        Log a phase transition when it happens in real-time.
-        This is called by MetricsManager when a phase change is detected.
-        
-        Args:
-            token_address: The token that transitioned
-            from_phase: Previous phase name
-            to_phase: New phase name
-            metrics: Current metrics snapshot
-            duration_seconds: How long the token was in from_phase
+        Log a state transition with rich context.
+    
+        Now creates detailed state keys that capture the full market situation,
+        not just simple phase names.
         """
-        # Create transition record with all relevant data
-        transition = {
+    # Create detailed state keys using metrics
+        from_state_key = self._create_state_key(from_phase, metrics)
+        to_state_key = self._create_state_key(to_phase, metrics)
+    
+        transition_data = {
             'token_address': token_address,
-            'from_phase': from_phase,
-            'to_phase': to_phase,
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': datetime.now().isoformat(),
+            'from_phase': from_phase,  # Keep simple phase for reference
+            'to_phase': to_phase,      # Keep simple phase for reference
+            'from_state': from_state_key,  # NEW: Detailed state
+            'to_state': to_state_key,      # NEW: Detailed state
             'duration_seconds': duration_seconds,
-            'metrics': {
-                'bsr': metrics.get('bsr', 0),
-                'vlr': metrics.get('vlr', 0),
-                'pii': metrics.get('pii', 0),
-                'vts': metrics.get('vts', 0),
-                'vei': metrics.get('vei', 0),
-                'token_age_hours': metrics.get('token_age_hours', 0)
-            }
+            'metrics': metrics
         }
-        
-        # Load existing transitions
-        transitions = self._load_transitions()
-        
-        # Add new transition
-        transitions.append(transition)
-        
-        # Save back to disk
-        self._save_transitions(transitions)
-        
-        logger.info(f"📝 Logged transition: {from_phase} → {to_phase} for {token_address[:8]}...")
-        logger.info(f"   Duration in {from_phase}: {duration_seconds:.0f}s ({duration_seconds/60:.1f}m)")
+    
+        self.transitions.append(transition_data)
+    
+    # Also update observation counts for the detailed state
+        if from_state_key not in self.observation_counts:
+            self.observation_counts[from_state_key] = 0
+        self.observation_counts[from_state_key] += 1
+    
+    # Save to file periodically
+        if len(self.transitions) % 10 == 0:  # Save every 10 transitions
+            self.save_transitions()
+    
+        logger.info(
+            f"📝 Logged transition: {from_state_key} → {to_state_key} "
+            f"(duration: {duration_seconds:.0f}s)"
+        )
     
     def _load_transitions(self) -> List[dict]:
         """Load all historical transitions from disk."""
