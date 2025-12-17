@@ -400,21 +400,14 @@ class StateTransitionAnalyzer:
 
     def get_transition_probabilities(self, current_phase: str) -> dict:
         """
-        Get transition probabilities for a given phase.
+        Get transition probabilities with intelligent fallbacks.
     
-        This is a simplified interface used by the realtime metrics system
-        to fetch probability distributions without needing full metrics.
-    
-        Args:
-            current_phase: The current phase to get predictions for
-        
-        Returns:
-            Dictionary with:
-            - next_phase_probabilities: Dict mapping phases to probabilities
-            - confidence: Overall confidence in predictions (0-1)
-            - observations: Number of historical observations supporting this
+        Enhanced to handle:
+        1. Exact state matches (best)
+        2. Similar state matches (good)
+        3. Base phase matches (acceptable)
+        4. No match (return empty)
         """
-    # Check if we have a matrix at all
         if not self.transition_matrix:
             return {
                 'next_phase_probabilities': {},
@@ -422,35 +415,101 @@ class StateTransitionAnalyzer:
                 'observations': 0
             }
     
-    # Check if we have data for this specific phase
-        if current_phase not in self.transition_matrix:
+    # STRATEGY 1: Try exact match first
+        if current_phase in self.transition_matrix:
+            transitions = self.transition_matrix[current_phase]
+            probabilities = {}
+            total_observations = 0
+        
+            for next_state, data in transitions.items():
+            # Extract just the phase from the detailed next_state key
+                next_phase = next_state.split('_')[0]
+            
+                if next_phase not in probabilities:
+                    probabilities[next_phase] = 0.0
+                probabilities[next_phase] += data['probability']
+            
+                if total_observations == 0:
+                    total_observations = data.get('sample_size', 0)
+        
+            observations = self.observation_counts.get(current_phase, total_observations)
+        
             return {
-                'next_phase_probabilities': {},
-                'confidence': 0.0,
-                'observations': 0
+                'next_phase_probabilities': probabilities,
+                'confidence': self.confidence_score,
+                'observations': observations
             }
     
-    # Get the transition data for this phase
-        transitions = self.transition_matrix[current_phase]
+    # STRATEGY 2: Fuzzy matching - look for similar states
+    # Extract the base phase from the detailed state key
+        base_phase = current_phase.split('_')[0]  # e.g., "early" from "early_rising_buy-pressure"
     
-    # Build a simple probability dictionary
-        probabilities = {}
-        total_observations = 0
+        # Find all states that start with this phase
+        similar_states = [state for state in self.transition_matrix.keys() 
+                         if state.startswith(base_phase + '_')]
     
-        for next_phase, data in transitions.items():
-            probabilities[next_phase] = data['probability']
-        # Use sample_size from the first entry as total observations
-            if total_observations == 0:
-                total_observations = data.get('sample_size', 0)
+        if similar_states:
+            logger.debug(
+                f"📊 No exact match for '{current_phase}', "
+                f"using {len(similar_states)} similar '{base_phase}' states"
+            )
+        
+        # Aggregate probabilities across all similar states
+            combined_probs = {}
+            total_weight = 0
+        
+            for similar_state in similar_states:
+                state_weight = self.observation_counts.get(similar_state, 1)
+                total_weight += state_weight
+            
+                for next_state, data in self.transition_matrix[similar_state].items():
+                # Extract just the phase from next_state
+                    next_phase = next_state.split('_')[0]
+                
+                    if next_phase not in combined_probs:
+                        combined_probs[next_phase] = 0.0
+                
+                    combined_probs[next_phase] += data['probability'] * state_weight
+        
+        # Normalize
+            if total_weight > 0:
+                for phase in combined_probs:
+                    combined_probs[phase] /= total_weight
+        
+            return {
+                'next_phase_probabilities': combined_probs,
+                'confidence': self.confidence_score * 0.7,  # Reduce confidence for fuzzy match
+                'observations': total_weight
+            }
     
-    # Get observation count for this specific state if we have it
-        observations = self.observation_counts.get(current_phase, total_observations)
+    # STRATEGY 3: Look for the base phase without any modifiers
+        if base_phase in self.transition_matrix:
+            logger.debug(f"📊 Using base phase '{base_phase}' as fallback")
+        
+            transitions = self.transition_matrix[base_phase]
+            probabilities = {}
+        
+            for next_state, data in transitions.items():
+                next_phase = next_state.split('_')[0] if '_' in next_state else next_state
+            
+                if next_phase not in probabilities:
+                    probabilities[next_phase] = 0.0
+                probabilities[next_phase] += data['probability']
+        
+            return {
+                'next_phase_probabilities': probabilities,
+                'confidence': self.confidence_score * 0.5,
+                'observations': self.observation_counts.get(base_phase, 1)
+            }
     
+    # STRATEGY 4: No match at all - return empty
+        logger.debug(f"⚠️ No predictions available for phase '{current_phase}'")
         return {
-            'next_phase_probabilities': probabilities,
-            'confidence': self.confidence_score,
-            'observations': observations
+            'next_phase_probabilities': {},
+            'confidence': 0.0,
+            'observations': 0
         }
+    
     
     def get_debug_info(self) -> dict:
         """
