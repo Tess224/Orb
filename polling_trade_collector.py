@@ -505,6 +505,23 @@ class PollingTradeCollector:
                 await asyncio.sleep(5)
         
         logger.info("🛑 Polling loop ended")
+
+    def stop_tracking_token(self, pool_address: str):
+        """
+        Stop polling for a specific pool.
+        Called when a token is removed from tracking.
+        """
+        if pool_address in self.active_pools:
+            self.active_pools.remove(pool_address)
+            logger.info(f"🛑 Stopped polling for pool {pool_address[:8]}")
+    
+    # Clean up tracking data
+        if pool_address in self.processed_signatures:
+            del self.processed_signatures[pool_address]
+    
+        if pool_address in self.pool_to_token:
+            del self.pool_to_token[pool_address]
+
     
     def get_stats(self) -> Dict:
         """Return current statistics about polling activity."""
