@@ -2330,26 +2330,22 @@ def stop_tracking():
             metrics_manager.remove_token(token_address)
             logger.info(f"  ✅ Removed {token_address[:8]} from MetricsManager")
         
-        # Step 2: Get pool address from mapping
-        pool_address = None
+        # Step 2: Remove from token-to-pool mapping (if exists)
         if token_address in token_to_pool_map:
-            pool_address = token_to_pool_map[token_address]
             del token_to_pool_map[token_address]
-            logger.info(f"  ✅ Removed pool mapping")
+            logger.info(f"  ✅ Removed from token-to-pool mapping")
         
-        # Step 3: CRITICAL - Stop the polling collector
+        # Step 3: CRITICAL - Stop the Birdeye polling collector
         stopped_polling = False
-        if polling_collector and pool_address:
+        if polling_collector:
             try:
-                stopped_polling = polling_collector.stop_tracking_token(pool_address)
+                stopped_polling = polling_collector.stop_tracking_token(token_address)
                 if stopped_polling:
-                    logger.info(f"  ✅ Stopped polling for pool {pool_address[:8]}")
+                    logger.info(f"  ✅ Stopped Birdeye polling for {token_address[:8]}")
                 else:
-                    logger.warning(f"  ⚠️ Pool not found in polling collector")
+                    logger.warning(f"  ⚠️ Token not found in Birdeye collector")
             except Exception as e:
-                logger.error(f"  ❌ Error stopping polling: {e}")
-        elif not pool_address:
-            logger.warning(f"  ⚠️ No pool address found for token {token_address[:8]}")
+                logger.error(f"  ❌ Error stopping Birdeye polling: {e}")
         else:
             logger.warning(f"  ⚠️ Polling collector not available")
         
@@ -2359,7 +2355,6 @@ def stop_tracking():
             'success': True,
             'message': f'Stopped tracking {token_address[:8]}',
             'token_address': token_address,
-            'pool_address': pool_address,
             'polling_stopped': stopped_polling,
             'timestamp': int(time.time())
         }), 200
