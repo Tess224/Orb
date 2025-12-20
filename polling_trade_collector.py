@@ -511,16 +511,28 @@ class PollingTradeCollector:
         Stop polling for a specific pool.
         Called when a token is removed from tracking.
         """
-        if pool_address in self.active_pools:
-            self.active_pools.remove(pool_address)
-            logger.info(f"🛑 Stopped polling for pool {pool_address[:8]}")
-    
-    # Clean up tracking data
-        if pool_address in self.processed_signatures:
-            del self.processed_signatures[pool_address]
-    
-        if pool_address in self.pool_to_token:
-            del self.pool_to_token[pool_address]
+        try:
+        # Remove from monitored pools
+            if pool_address in self.monitored_pools:
+                token_info = self.monitored_pools[pool_address]
+                token_symbol = token_info.get('token_symbol', 'UNKNOWN')
+                del self.monitored_pools[pool_address]
+                logger.info(f"🛑 Stopped polling for pool {pool_address[:8]} (Token: {token_symbol})")
+            else:
+                logger.warning(f"⚠️ Pool {pool_address[:8]} not in monitored pools")
+                return False
+        
+        # Clean up processed signatures
+            if pool_address in self.processed_signatures:
+                del self.processed_signatures[pool_address]
+                logger.info(f"🧹 Cleaned up signatures for pool {pool_address[:8]}")
+        
+            return True
+        
+        except Exception as e:
+            logger.error(f"❌ Error stopping pool tracking: {e}")
+            return False
+        
 
     
     def get_stats(self) -> Dict:
