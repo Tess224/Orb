@@ -2329,13 +2329,10 @@ def stop_tracking():
         if metrics_manager and token_address in metrics_manager.trackers:
             metrics_manager.remove_token(token_address)
             logger.info(f"  ✅ Removed {token_address[:8]} from MetricsManager")
+        else:
+            logger.warning(f"  ⚠️ Token {token_address[:8]} not in MetricsManager")
         
-        # Step 2: Remove from token-to-pool mapping (if exists)
-        if token_address in token_to_pool_map:
-            del token_to_pool_map[token_address]
-            logger.info(f"  ✅ Removed from token-to-pool mapping")
-        
-        # Step 3: CRITICAL - Stop the Birdeye polling collector
+        # Step 2: CRITICAL - Stop the Birdeye polling collector
         stopped_polling = False
         if polling_collector:
             try:
@@ -2346,6 +2343,8 @@ def stop_tracking():
                     logger.warning(f"  ⚠️ Token not found in Birdeye collector")
             except Exception as e:
                 logger.error(f"  ❌ Error stopping Birdeye polling: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
         else:
             logger.warning(f"  ⚠️ Polling collector not available")
         
