@@ -433,6 +433,40 @@ class BirdeyeTradeCollector:
         
         logger.info("🛑 Polling loop ended")
 
+    def stop_tracking_token(self, token_address: str):
+        """
+        Stop monitoring a token for trades.
+        Called when a token is removed from tracking.
+    
+        Args:
+            token_address: The token's mint address to stop tracking
+        
+        Returns:
+            bool: True if successfully stopped, False if token wasn't being tracked
+        """
+        try:
+        # Remove from monitored tokens
+            if token_address in self.monitored_tokens:
+                token_info = self.monitored_tokens[token_address]
+                token_symbol = token_info.get('symbol', 'UNKNOWN')
+                del self.monitored_tokens[token_address]
+                logger.info(f"🛑 Stopped polling for token {token_address[:8]} (Symbol: {token_symbol})")
+            else:
+                logger.warning(f"⚠️ Token {token_address[:8]} not in monitored tokens")
+                return False
+        
+        # Clean up processed signatures
+            if token_address in self.processed_signatures:
+                del self.processed_signatures[token_address]
+                logger.info(f"🧹 Cleaned up signatures for token {token_address[:8]}")
+        
+            return True
+        
+        except Exception as e:
+            logger.error(f"❌ Error stopping token tracking: {e}")
+            return False
+
+    
     def get_stats(self) -> Dict:
         """Return current statistics about polling activity."""
         return self.stats.copy()
