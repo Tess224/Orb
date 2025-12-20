@@ -2313,6 +2313,8 @@ def stop_tracking():
     """
     Stop tracking a token and stop polling for it.
     """
+    global birdeye_collector, metrics_manager 
+    
     try:
         data = request.get_json()
         if not data or 'token_address' not in data:
@@ -2334,9 +2336,9 @@ def stop_tracking():
         
         # Step 2: CRITICAL - Stop the Birdeye polling collector
         stopped_polling = False
-        if polling_collector:
+        if birdeye_collector:  # ← CHANGED from polling_collector
             try:
-                stopped_polling = polling_collector.stop_tracking_token(token_address)
+                stopped_polling = birdeye_collector.stop_tracking_token(token_address)  # ← CHANGED
                 if stopped_polling:
                     logger.info(f"  ✅ Stopped Birdeye polling for {token_address[:8]}")
                 else:
@@ -2346,7 +2348,7 @@ def stop_tracking():
                 import traceback
                 logger.error(traceback.format_exc())
         else:
-            logger.warning(f"  ⚠️ Polling collector not available")
+            logger.warning(f"  ⚠️ Birdeye collector not available")
         
         logger.info(f"✅ Stop tracking complete for {token_address[:8]}")
         
