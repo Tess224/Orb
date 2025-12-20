@@ -2325,70 +2325,42 @@ def stop_tracking():
         token_address = data['token_address']
         logger.info(f"🛑 Request to stop tracking {token_address[:8]}...")
         
-        # Check if metrics manager exists
-        if not metrics_manager:
-            return jsonify({
-                'success': False,
-                'error': 'Tracking system not initialized',
-                'status': 'error'
-            }), 503
-        
-        # Check if token is actually being tracked
-        if token_address not in metrics_manager.trackers:
-            logger.warning(f"⚠️ Token {token_address[:8]} is not being tracked")
-            return jsonify({
-                'success': False,
-                'error': f'Token {token_address[:8]} is not currently being tracked',
-                'status': 'not_found'
-            }), 404
-        
-        # Step 1: Remove from MetricsManager
-        metrics_manager.remove_token(token_address)
-        logger.info(f"  ✅ Removed {token_address[:8]} from MetricsManager")
+        # Step 1: Remove from MetricsManager (if exists)
+        if metrics_manager and token_address in metrics_manager.trackers:
+            metrics_manager.remove_token(token_address)
+            logger.info(f"  ✅ Removed {token_address[:8]} from MetricsManager")
         
         # Step 2: Get pool address from mapping
         pool_address = None
         if token_address in token_to_pool_map:
             pool_address = token_to_pool_map[token_address]
             del token_to_pool_map[token_address]
-            logger.info(f"  ✅ Removed pool mapping for {token_address[:8]}")
+            logger.info(f"  ✅ Removed pool mapping")
         
-        # Step 3: CRITICAL - Stop the polling loop
-        # Use try-except to handle if polling_collector doesn't exist or has different structure
-        if polling_collector:
+        # Step 3: CRITICAL - Stop the polling collector
+        stopped_polling = False
+        if polling_collector and pool_address:
             try:
-                # Check if this is the Birdeye collector (has monitored_tokens)
-                if hasattr(polling_collector, 'monitored_tokens') and token_address in polling_collector.monitored_tokens:
-                    del polling_collector.monitored_tokens[token_address]
-                    logger.info(f"  ✅ Removed from Birdeye monitored_tokens")
-                
-                # Check if this is the old Helius collector (has monitored_pools)
-                elif hasattr(polling_collector, 'monitored_pools') and pool_address:
-                    if pool_address in polling_collector.monitored_pools:
-                        del polling_collector.monitored_pools[pool_address]
-                        logger.info(f"  ✅ Removed from monitored_pools")
-                    
-                    # Also clean up processed signatures
-                    if hasattr(polling_collector, 'processed_signatures') and pool_address in polling_collector.processed_signatures:
-                        del polling_collector.processed_signatures[pool_address]
-                        logger.info(f"  ✅ Cleaned up signature cache")
-                
+                stopped_polling = polling_collector.stop_tracking_token(pool_address)
+                if stopped_polling:
+                    logger.info(f"  ✅ Stopped polling for pool {pool_address[:8]}")
                 else:
-                    logger.warning(f"  ⚠️ Polling collector structure not recognized, skipping cleanup")
-                    
-            except Exception as cleanup_error:
-                logger.error(f"  ⚠️ Error during polling cleanup: {cleanup_error}")
-                # Don't fail the whole request just because polling cleanup failed
+                    logger.warning(f"  ⚠️ Pool not found in polling collector")
+            except Exception as e:
+                logger.error(f"  ❌ Error stopping polling: {e}")
+        elif not pool_address:
+            logger.warning(f"  ⚠️ No pool address found for token {token_address[:8]}")
         else:
             logger.warning(f"  ⚠️ Polling collector not available")
         
-        logger.info(f"✅ Successfully stopped tracking {token_address[:8]}")
+        logger.info(f"✅ Stop tracking complete for {token_address[:8]}")
         
         return jsonify({
             'success': True,
             'message': f'Stopped tracking {token_address[:8]}',
             'token_address': token_address,
             'pool_address': pool_address,
+            'polling_stopped': stopped_polling,
             'timestamp': int(time.time())
         }), 200
         
@@ -2401,6 +2373,7 @@ def stop_tracking():
             'error': str(e),
             'status': 'error'
         }), 500
+     
 
 @app.route('/metrics/realtime/<token_address>', methods=['GET'])
 def get_realtime_metrics(token_address: str):
