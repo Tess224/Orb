@@ -241,14 +241,18 @@ class StateTransitionAnalyzer:
         except Exception as e:
             logger.error(f"❌ Error saving transitions: {e}")
     
-    def build_transition_matrix(self):
+    def build_transition_matrix(self, min_observations: int = 5):
         """
         Build transition probability matrix from logged transitions.
     
         Now uses detailed state keys instead of just phase names.
+    
+        Args:
+            min_observations: Minimum number of observations required for a state
+                             to be included in the matrix (default: 5)
         """
-        if len(self.transitions) < 2:
-            logger.warning("Not enough transitions to build matrix (need at least 2)")
+        if len(self.transitions) < min_observations:
+            logger.warning(f"Not enough transitions to build matrix (have {len(self.transitions)}, need at least {min_observations})")
             self.confidence_score = 0.0
             return
     
@@ -257,8 +261,8 @@ class StateTransitionAnalyzer:
         state_totals = {}
     
         for trans in self.transitions:
-            from_state = trans.get('from_state', trans['from_phase'])  # Use detailed state if available
-            to_state = trans.get('to_state', trans['to_phase'])
+            from_state = trans.get('from_state', trans.get('from_phase', 'unknown'))
+            to_state = trans.get('to_state', trans.get('to_phase', 'unknown'))
         
         # Initialize nested dict if needed
             if from_state not in transition_counts:
@@ -272,8 +276,33 @@ class StateTransitionAnalyzer:
             transition_counts[from_state][to_state] += 1
             state_totals[from_state] += 1
     
+    # Filter out states with too few observations
+        logger.info(f"📊 Filtering states with fewer than {min_observations} observations...")
+        filtered_counts = {}
+        filtered_totals = {}
+        excluded_states = 0
+    
+        for from_state, to_states in transition_counts.items():
+            if state_totals[from_state] >= min_observations:
+                filtered_counts[from_state] = to_states
+                filtered_totals[from_state] = state_totals[from_state]
+            else:
+                excluded_states += 1
+    
+        logger.info(f"   ✅ Kept {len(filtered_counts)} states with sufficient data")
+        logger.info(f"   ⏭️  Excluded {excluded_states} states with insufficient data")
+    
+        transition_counts = filtered_counts
+        state_totals = filtered_totals
+    
+        if not transition_counts:
+            logger.warning(f"❌ No states have {min_observations}+ observations. Lower min_observations or collect more data.")
+            self.confidence_score = 0.0
+            return
+    
     # Convert counts to probabilities
         self.transition_matrix = {}
+        self.observation_counts = state_totals.copy()
     
         for from_state, to_states in transition_counts.items():
             self.transition_matrix[from_state] = {}
@@ -284,33 +313,35 @@ class StateTransitionAnalyzer:
             
                 self.transition_matrix[from_state][to_state] = {
                     'probability': probability,
-                    'sample_size': count,
+                    'count': count,
                     'total_observations': total
                 }
     
-    # Calculate confidence score based on data quantity
-        total_transitions = len(self.transitions)
-        unique_states = len(self.transition_matrix)
+    # Calculate confidence score
+        total_obs = sum(state_totals.values())
+        num_states = len(self.transition_matrix)
+        avg_obs_per_state = total_obs / num_states if num_states > 0 else 0
     
-        if total_transitions < 10:
-            self.confidence_score = 0.3
-        elif total_transitions < 50:
-            self.confidence_score = 0.5
-        elif total_transitions < 100:
+        # Confidence based on average observations per state
+        if avg_obs_per_state >= 20:
+            self.confidence_score = 0.9
+        elif avg_obs_per_state >= 10:
             self.confidence_score = 0.7
-        elif total_transitions < 200:
-            self.confidence_score = 0.85
+        elif avg_obs_per_state >= 5:
+            self.confidence_score = 0.5
         else:
-            self.confidence_score = 0.95
+            self.confidence_score = 0.3
     
-    # Bonus for having diverse state observations
-        if unique_states > 10:
-            self.confidence_score = min(1.0, self.confidence_score + 0.05)
+        self.total_transitions = len(self.transitions)
     
-        logger.info(
-            f"✅ Transition matrix built: {unique_states} states, "
-            f"{total_transitions} transitions, confidence={self.confidence_score:.2f}"
-            )
+        logger.info(f"✅ Built transition matrix:")
+        logger.info(f"   States: {num_states}")
+        logger.info(f"   Total transitions: {self.total_transitions}")
+        logger.info(f"   Avg observations per state: {avg_obs_per_state:.1f}")
+        logger.info(f"   Confidence: {self.confidence_score:.1%}")
+    
+    # Save the matrix
+        self._save_matrix()
         
     
     def _calculate_confidence(self, num_transitions: int) -> float:
