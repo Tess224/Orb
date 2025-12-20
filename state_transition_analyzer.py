@@ -44,9 +44,15 @@ class StateTransitionAnalyzer:
         self.confidence_score = 0.0
         self.total_transitions = 0
         self.observation_counts = {}  # NEW: Track how many observations per state
-                     
+        self.transitions = [] 
+
+         
         logger.info("🔧 Initializing state transition analyzer...")
         self._load_matrix()
+        # Load existing transitions from disk into memory
+        self.transitions = self._load_transitions()
+        logger.info(f"📊 Loaded {len(self.transitions)} historical transitions")
+
         logger.info("🧠 State Transition Analyzer initialized")
 
 
@@ -209,7 +215,7 @@ class StateTransitionAnalyzer:
     
     # Save to file periodically
         if len(self.transitions) % 10 == 0:  # Save every 10 transitions
-            self.save_transitions()
+            self._save_transitions(self.transitions)
     
         logger.info(
             f"📝 Logged transition: {from_state_key} → {to_state_key} "
