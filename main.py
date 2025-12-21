@@ -2486,7 +2486,8 @@ def build_transition_matrix():
         
         # Build new matrix from all historical data
         logger.info("🔬 Starting transition matrix analysis...")
-        analyzer.build_transition_matrix(min_observations=10)
+        min_observations = data.get('min_observations', 3)
+        analyzer.build_transition_matrix(min_observations=min_observations)
         
         if len(analyzer.transition_matrix) == 0:
             return jsonify({
