@@ -1403,23 +1403,6 @@ class TokenMetricsTracker:
             prob_result = state_analyzer.get_transition_probabilities(current_state_key)
         
             if prob_result:
-                # Extract just the phase from each next state key
-                # State keys look like "early_high-vts_strong-buy_fresh_strong-conviction"
-                # We want to extract just the phase part for simpler output
-                raw_probs = prob_result['probabilities']
-        
-                # Group by next phase (ignoring the detailed metrics)
-                phase_probs = {}
-                for next_state_key, prob in raw_probs.items():
-                    # Extract phase (it's the first part before the first underscore)
-                    next_phase = next_state_key.split('_')[0]
-            
-                    # Accumulate probability for this phase
-                    if next_phase in phase_probs:
-                        phase_probs[next_phase] += prob
-                    else:
-                        phase_probs[next_phase] = prob
-        
                 # Method already returns simplified phase probabilities!
                 next_phase_probs = prob_result.get('next_phase_probabilities', {})
                 transition_conf = prob_result.get('confidence', 0.0)
