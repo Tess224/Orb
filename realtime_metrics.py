@@ -1420,9 +1420,10 @@ class TokenMetricsTracker:
                     else:
                         phase_probs[next_phase] = prob
         
-                next_phase_probs = phase_probs
-                transition_conf = prob_result['confidence']
-                transition_obs = prob_result['observations']
+                # Method already returns simplified phase probabilities!
+                next_phase_probs = prob_result.get('next_phase_probabilities', {})
+                transition_conf = prob_result.get('confidence', 0.0)
+                transition_obs = prob_result.get('observations', 0)
         
                 logger.debug(
                     f"📊 Transition probs for {self.token_address[:8]} in {phase}: {next_phase_probs}"
