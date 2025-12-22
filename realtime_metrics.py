@@ -1386,18 +1386,22 @@ class TokenMetricsTracker:
         from main import state_analyzer
 
         if state_analyzer and len(state_analyzer.transition_matrix) > 0:
-            # Create a temporary dict with current metrics to query probabilities
-            current_state_dict = {
-                'phase': phase,
+            # Create the detailed state key for the current state
+            metrics_for_state_key = {
                 'vts': vts,
                 'pii': pii,
                 'vei': vei,
+                'bsr': bsr_1h,
+                'vlr': vlr_1h,
                 'conviction_multiplier': conviction_multiplier
             }
     
-            # Get probabilities for this state
-            prob_result = state_analyzer.get_transition_probabilities(current_state_dict)
+    # Generate the state key string (e.g., "dormant_spiking_slight-buy_fresh_normal-conviction")
+            current_state_key = state_analyzer._create_state_key(phase, metrics_for_state_key)
     
+    # Get probabilities for this state (pass the STRING, not a dict)
+            prob_result = state_analyzer.get_transition_probabilities(current_state_key)
+        
             if prob_result:
                 # Extract just the phase from each next state key
                 # State keys look like "early_high-vts_strong-buy_fresh_strong-conviction"
