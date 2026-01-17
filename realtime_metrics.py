@@ -1456,6 +1456,10 @@ class TokenMetricsTracker:
         )
         
         self.metric_history.append(snapshot)
+        # Check for metric alerts
+        from main import alert_manager
+        if alert_manager:
+            alert = alert_manager.check_metrics_changes(self.token_address, snapshot)
         # Save to historical data for state transition analysis
         self.historical_collector.save_snapshot(self.token_address, snapshot)
 
