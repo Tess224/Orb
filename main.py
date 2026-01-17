@@ -3161,8 +3161,9 @@ def get_vapid_public_key():
     Get the VAPID public key for the frontend to use when subscribing.
     The frontend needs this key to subscribe to push notifications.
     """
-    push_svc = get_push_service()
-    from web_push_service import get_push_service
+    from web_push_service import get_push_service 
+    push_svc = get_push_service() 
+    
     if not push_svc or not push_svc.configured:
         return jsonify({
             'success': False,
