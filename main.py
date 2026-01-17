@@ -20,6 +20,7 @@ from solders.pubkey import Pubkey
 from solders.signature import Signature
 from birdeye_trade_collector import BirdeyeTradeCollector
 from realtime_metrics import MetricsManager, MetricsSnapshot
+from web_push_service import init_push_service, get_push_service
 from metric_alerts import MetricAlertManager
 from signal_fusion import signal_fusion, FusedSignal, SignalDirection, SignalUrgency
 logging.basicConfig(
@@ -51,6 +52,8 @@ wallet_analysis_cache: Dict[str, Dict] = {}
 # Rate limiting storage - tracks how many analyses each access code has used
 alert_manager = MetricAlertManager()
 logger.info("✅ Alert manager initialized")
+push_service = init_push_service()
+logger.info("✅ Web Push service initialized")
 
 rate_limit_storage: Dict[str, Dict] = {}
 # NEW GLOBALS FOR REAL-TIME SYSTEM
