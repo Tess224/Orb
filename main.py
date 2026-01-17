@@ -2769,6 +2769,8 @@ def get_fused_signal(token_address: str):
         
         # Fuse the signals from both systems
         fused = signal_fusion.fuse_signals(token_address, metrics_snapshot, slippage_analysis)
+        if alert_manager and slippage_analysis:
+            slippage_alert = alert_manager.check_slippage_changes(token_address, slippage_analysis)
         
         # Log the fused result
         logger.info(f"  🎯 Fused signal: {fused.direction.value} (confidence: {fused.confidence:.0%})")
