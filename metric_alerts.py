@@ -292,6 +292,16 @@ class MetricAlertManager:
             self._add_alert(alert)
             logger.info(f"🚨 {alert.severity.upper()} Alert: {alert.message}")
         
+        # Send push notification for each alert
+        try:
+            from web_push_service import get_push_service
+            push_svc = get_push_service()
+            if push_svc and push_svc.configured:
+                for alert in alerts:
+                    push_svc.send_alert_notification(alert)
+        except Exception as e:
+            logger.error(f"Push notification error: {e}")
+        
         return alerts
     
     def check_slippage_changes(self, token_address: str, current_slippage: Dict) -> List[MetricAlert]:
@@ -441,6 +451,16 @@ class MetricAlertManager:
         for alert in alerts:
             self._add_alert(alert)
             logger.info(f"🚨 Slippage Alert: {alert.message}")
+            # Send push notification for each alert
+        try:
+            from web_push_service import get_push_service
+            push_svc = get_push_service()
+            if push_svc and push_svc.configured:
+                for alert in alerts:
+                    push_svc.send_alert_notification(alert)
+        except Exception as e:
+            logger.error(f"Push notification error: {e}")
+        
         
         return alerts
     
