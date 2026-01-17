@@ -110,74 +110,72 @@ class MetricAlertManager:
             return alerts
         
         # ========================================
-        # CHECK 1: VTS Change > 50%
+        # CHECK 1 & 2: VTS and PII Changes (Always Reported Together)
         # ========================================
         old_vts = last_state['vts']
         new_vts = current_state['vts']
-        if old_vts > 0.01:  # Avoid division by zero
-            vts_change_pct = abs(new_vts - old_vts) / old_vts * 100
-            if vts_change_pct > 50:
-                severity = 'critical' if vts_change_pct > 100 else 'high'
-                direction = "📈 SURGE" if new_vts > old_vts else "📉 DROP"
-                alerts.append(MetricAlert(
-                    timestamp=current_state['timestamp'],
-                    token_address=token_address,
-                    alert_type='vts_change',
-                    severity=severity,
-                    message=f"VTS {direction}: {old_vts:.2f} → {new_vts:.2f} ({vts_change_pct:.0f}%)",
-                    details=[
-                        f"Volume Trend Score changed {vts_change_pct:.0f}%",
-                        f"Old: {old_vts:.2f} → New: {new_vts:.2f}",
-                        f"Phase: {current_state['phase']}"
-                    ],
-                    changes={
-                        'metric': 'vts',
-                        'old_value': old_vts,
-                        'new_value': new_vts,
-                        'change_pct': vts_change_pct
-                    }
-                ))
-        
-        # ========================================
-        # CHECK 2: PII Change > 30%
-        # ========================================
         old_pii = last_state['pii']
         new_pii = current_state['pii']
-        # Use absolute value for percentage calculation since PII can be negative
+        
+        # Calculate VTS change percentage
+        vts_change_pct = 0
+        if old_vts > 0.01:
+            vts_change_pct = abs(new_vts - old_vts) / old_vts * 100
+        
+        # Calculate PII change percentage
         pii_denominator = max(abs(old_pii), 0.01)
         pii_change_pct = abs(new_pii - old_pii) / pii_denominator * 100
         
-        if pii_change_pct > 30:
-            # Determine if it's a pressure shift
-            if old_pii < 0 and new_pii > 0:
-                direction = "🟢 SELL→BUY"
+        # If EITHER VTS > 50% OR PII > 30%, report BOTH together
+        vts_triggered = vts_change_pct > 50
+        pii_triggered = pii_change_pct > 30
+        
+        if vts_triggered or pii_triggered:
+            # Determine overall severity
+            if vts_change_pct > 100 or (pii_triggered and (old_pii * new_pii < 0)):
+                severity = 'critical'
+            elif vts_triggered or (old_pii < 0 and new_pii > 0) or (old_pii > 0 and new_pii < 0):
                 severity = 'high'
-            elif old_pii > 0 and new_pii < 0:
-                direction = "🔴 BUY→SELL"
-                severity = 'high'
-            elif new_pii > old_pii:
-                direction = "📈 BUY PRESSURE UP"
-                severity = 'medium'
             else:
-                direction = "📉 BUY PRESSURE DOWN"
                 severity = 'medium'
+            
+            # Build descriptive message showing both metrics
+            vts_dir = "↑" if new_vts > old_vts else "↓"
+            pii_dir = "↑" if new_pii > old_pii else "↓"
+            
+            # Determine pressure state
+            if new_pii > 0.1:
+                pressure = "🟢 BUY PRESSURE"
+            elif new_pii < -0.1:
+                pressure = "🔴 SELL PRESSURE"
+            else:
+                pressure = "⚪ NEUTRAL"
+            
+            # Create combined message
+            message = f"📊 VTS: {old_vts:.2f}→{new_vts:.2f} ({vts_dir}{vts_change_pct:.0f}%) | PII: {old_pii:.2f}→{new_pii:.2f} ({pii_dir}{pii_change_pct:.0f}%) | {pressure}"
             
             alerts.append(MetricAlert(
                 timestamp=current_state['timestamp'],
                 token_address=token_address,
-                alert_type='pii_change',
+                alert_type='vts_pii_change',
                 severity=severity,
-                message=f"PII {direction}: {old_pii:.3f} → {new_pii:.3f} ({pii_change_pct:.0f}%)",
+                message=message,
                 details=[
-                    f"Price Impact Index changed {pii_change_pct:.0f}%",
-                    f"Old: {old_pii:.3f} → New: {new_pii:.3f}",
-                    f"Direction: {'Buy pressure' if new_pii > 0 else 'Sell pressure'}"
+                    f"VTS: {old_vts:.2f} → {new_vts:.2f} ({vts_change_pct:.0f}% change)",
+                    f"PII: {old_pii:.3f} → {new_pii:.3f} ({pii_change_pct:.0f}% change)",
+                    f"Pressure: {pressure}",
+                    f"Phase: {current_state['phase']}",
+                    f"Trigger: {'VTS' if vts_triggered else ''}{' + ' if vts_triggered and pii_triggered else ''}{'PII' if pii_triggered else ''}"
                 ],
                 changes={
-                    'metric': 'pii',
-                    'old_value': old_pii,
-                    'new_value': new_pii,
-                    'change_pct': pii_change_pct
+                    'vts_old': old_vts,
+                    'vts_new': new_vts,
+                    'vts_change_pct': vts_change_pct,
+                    'pii_old': old_pii,
+                    'pii_new': new_pii,
+                    'pii_change_pct': pii_change_pct,
+                    'vts_triggered': vts_triggered,
+                    'pii_triggered': pii_triggered
                 }
             ))
         
