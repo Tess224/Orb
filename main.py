@@ -3151,6 +3151,165 @@ def _generate_natural_language_explanation(fused) -> str:
     
     return " ".join(parts)
 
+# ============================================
+# ADD THESE ROUTES TO main.py
+# ============================================
+
+@app.route('/push/vapid-public-key', methods=['GET'])
+def get_vapid_public_key():
+    """
+    Get the VAPID public key for the frontend to use when subscribing.
+    The frontend needs this key to subscribe to push notifications.
+    """
+    push_svc = get_push_service()
+    from web_push_service import get_push_service
+    if not push_svc or not push_svc.configured:
+        return jsonify({
+            'success': False,
+            'error': 'Push notifications not configured on server'
+        }), 503
+    
+    return jsonify({
+        'success': True,
+        'vapid_public_key': push_svc.get_vapid_public_key()
+    }), 200
+
+
+@app.route('/push/subscribe', methods=['POST'])
+def subscribe_to_push():
+    """
+    Subscribe a browser to receive push notifications.
+    
+    Request body:
+    {
+        "subscription": {
+            "endpoint": "https://fcm.googleapis.com/...",
+            "keys": {
+                "p256dh": "...",
+                "auth": "..."
+            }
+        },
+        "token_address": "optional - specific token to get alerts for"
+    }
+    """
+    from web_push_service import get_push_service
+    push_svc = get_push_service()
+    
+    if not push_svc:
+        return jsonify({
+            'success': False,
+            'error': 'Push service not initialized'
+        }), 503
+    
+    try:
+        data = request.get_json()
+        subscription = data.get('subscription')
+        token_address = data.get('token_address')
+        
+        if not subscription:
+            return jsonify({
+                'success': False,
+                'error': 'Missing subscription data'
+            }), 400
+        
+        success = push_svc.add_subscription(subscription, token_address)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': 'Successfully subscribed to push notifications'
+            }), 200
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to add subscription'
+            }), 400
+            
+    except Exception as e:
+        logger.error(f"Error subscribing to push: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/push/unsubscribe', methods=['POST'])
+def unsubscribe_from_push():
+    """
+    Unsubscribe a browser from push notifications.
+    
+    Request body:
+    {
+        "endpoint": "https://fcm.googleapis.com/..."
+    }
+    """
+    from web_push_service import get_push_service
+    push_svc = get_push_service()
+    
+    if not push_svc:
+        return jsonify({
+            'success': False,
+            'error': 'Push service not initialized'
+        }), 503
+    
+    try:
+        data = request.get_json()
+        endpoint = data.get('endpoint')
+        
+        if not endpoint:
+            return jsonify({
+                'success': False,
+                'error': 'Missing endpoint'
+            }), 400
+        
+        success = push_svc.remove_subscription(endpoint)
+        
+        return jsonify({
+            'success': True,
+            'message': 'Unsubscribed' if success else 'Subscription not found'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error unsubscribing: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/push/test', methods=['POST'])
+def test_push_notification():
+    """
+    Send a test push notification.
+    Useful for verifying push is working.
+    """
+    from web_push_service import get_push_service
+    push_svc = get_push_service()
+    
+    if not push_svc or not push_svc.configured:
+        return jsonify({
+            'success': False,
+            'error': 'Push notifications not configured'
+        }), 503
+    
+    try:
+        count = push_svc.send_notification(
+            title="🧪 ORB Test",
+            body="If you see this, push notifications are working!",
+            severity='medium'
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': f'Test notification sent to {count} subscribers'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error sending test push: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 # ============================================================================
 # INITIALIZATION - This runs when Gunicorn imports the file
