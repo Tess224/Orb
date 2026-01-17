@@ -20,6 +20,7 @@ from solders.pubkey import Pubkey
 from solders.signature import Signature
 from birdeye_trade_collector import BirdeyeTradeCollector
 from realtime_metrics import MetricsManager, MetricsSnapshot
+from metric_alerts import MetricAlertManager
 from signal_fusion import signal_fusion, FusedSignal, SignalDirection, SignalUrgency
 logging.basicConfig(
     level=logging.INFO,
@@ -47,9 +48,10 @@ CHAINLINK_RPC = os.environ.get('CHAINLINK_RPC_URL')
 analysis_cache: Dict[str, Dict] = {}
 historical_slippage: Dict[str, List[Dict]] = {}
 wallet_analysis_cache: Dict[str, Dict] = {}
-# NEW CODE STARTS HERE - Add these lines
 # Rate limiting storage - tracks how many analyses each access code has used
-# Structure: {'ACCESS-CODE': {'count': 5, 'reset_time': 1234567890}}
+alert_manager = MetricAlertManager()
+logger.info("✅ Alert manager initialized")
+
 rate_limit_storage: Dict[str, Dict] = {}
 # NEW GLOBALS FOR REAL-TIME SYSTEM
 # CHANGED: Now using Birdeye collector instead of Helius
@@ -2987,6 +2989,92 @@ def explain_signal(token_address: str):
             'success': False,
             'error': str(e)
         }), 500
+
+@app.route('/alerts/enable', methods=['POST'])
+def enable_token_alerts():
+    """Enable alerts for a specific token."""
+    try:
+        data = request.get_json()
+        token_address = data.get('token_address')
+        
+        if not token_address:
+            return jsonify({'success': False, 'error': 'token_address required'}), 400
+        
+        alert_manager.enable_alerts(token_address)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Alerts enabled for {token_address[:8]}...'
+        }), 200
+    except Exception as e:
+        logger.error(f"Error enabling alerts: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/alerts/disable', methods=['POST'])
+def disable_token_alerts():
+    """Disable alerts for a specific token."""
+    try:
+        data = request.get_json()
+        token_address = data.get('token_address')
+        
+        if not token_address:
+            return jsonify({'success': False, 'error': 'token_address required'}), 400
+        
+        alert_manager.disable_alerts(token_address)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Alerts disabled for {token_address[:8]}...'
+        }), 200
+    except Exception as e:
+        logger.error(f"Error disabling alerts: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/alerts/status/<token_address>', methods=['GET'])
+def get_alert_status(token_address):
+    """Check if alerts are enabled for a token."""
+    try:
+        enabled = alert_manager.is_enabled(token_address)
+        return jsonify({
+            'success': True,
+            'token_address': token_address,
+            'alerts_enabled': enabled
+        }), 200
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/alerts/get/<token_address>', methods=['GET'])
+def get_token_alerts(token_address):
+    """Get alerts for a specific token."""
+    try:
+        limit = int(request.args.get('limit', 20))
+        alerts = alert_manager.get_alerts(token_address, limit)
+        
+        return jsonify({
+            'success': True,
+            'token_address': token_address,
+            'count': len(alerts),
+            'alerts': alerts
+        }), 200
+    except Exception as e:
+        logger.error(f"Error getting alerts: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/alerts/clear/<token_address>', methods=['POST'])
+def clear_token_alerts(token_address):
+    """Clear alerts for a token."""
+    try:
+        alert_manager.clear_alerts(token_address)
+        return jsonify({
+            'success': True,
+            'message': 'Alerts cleared'
+        }), 200
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 def _generate_natural_language_explanation(fused) -> str:
