@@ -7,6 +7,9 @@ by probing Jupiter's quote API and analyzing liquidity structure asymmetries.
 import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_talisman import Talisman
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import requests
 import time
 from datetime import datetime, timedelta
@@ -31,7 +34,33 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-CORS(app)
+# Security: Configure CORS with specific origins
+ALLOWED_ORIGINS = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:3000').split(',')
+CORS(app,
+     origins=ALLOWED_ORIGINS,
+     supports_credentials=True,
+     methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+     allow_headers=['Content-Type', 'Authorization'])
+
+# Security: Add security headers (disable in development if needed)
+if os.environ.get('FLASK_ENV') != 'development':
+    Talisman(app,
+             force_https=True,
+             strict_transport_security=True,
+             content_security_policy={
+                 'default-src': "'self'",
+                 'script-src': "'self' 'unsafe-inline'",
+                 'style-src': "'self' 'unsafe-inline'",
+                 'img-src': "'self' data: https:",
+             })
+
+# Security: Add rate limiting
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri="memory://"
+)
 
 SOL_MINT = 'So11111111111111111111111111111111111111112'
 
@@ -48,6 +77,12 @@ CHAINLINK_RPC = os.environ.get('CHAINLINK_RPC_URL')
 
 analysis_cache: Dict[str, Dict] = {}
 historical_slippage: Dict[str, List[Dict]] = {}
+
+def mask_sensitive(value: str, show_chars: int = 4) -> str:
+    """Mask sensitive data for logging (e.g., access codes, tokens)"""
+    if not value or len(value) <= show_chars:
+        return '[REDACTED]'
+    return f"{value[:show_chars]}{'*' * (len(value) - show_chars)}"
 wallet_analysis_cache: Dict[str, Dict] = {}
 # Rate limiting storage - tracks how many analyses each access code has used
 alert_manager = MetricAlertManager()
@@ -118,7 +153,7 @@ def check_rate_limit(access_code: str) -> Dict:
     # Check if the rate limit window has expired (meaning it's a new day)
     if current_time >= usage_data['reset_time']:
         # Time window expired, so reset the counter to zero
-        logger.info(f"⏰ Rate limit reset for access code {access_code}")
+        logger.info(f"⏰ Rate limit reset for access code {mask_sensitive(access_code)}")
         reset_time = current_time + (RATE_LIMIT_WINDOW_HOURS * 3600)
         rate_limit_storage[access_code] = {
             'count': 0,
@@ -131,7 +166,7 @@ def check_rate_limit(access_code: str) -> Dict:
     remaining = limit - current_count
     
     if current_count >= limit:
-        logger.warning(f"⛔ Rate limit exceeded for {access_code}: {current_count}/{limit}")
+        logger.warning(f"⛔ Rate limit exceeded for {mask_sensitive(access_code)}: {current_count}/{limit}")
         return {
             'allowed': False,
             'remaining': 0,
@@ -139,7 +174,7 @@ def check_rate_limit(access_code: str) -> Dict:
             'limit': limit
         }
     
-    logger.info(f"✅ Rate limit OK for {access_code}: {current_count}/{limit} used")
+    logger.info(f"✅ Rate limit OK for {mask_sensitive(access_code)}: {current_count}/{limit} used")
     return {
         'allowed': True,
         'remaining': remaining,
@@ -162,7 +197,7 @@ def increment_usage(access_code: str) -> None:
         rate_limit_storage[access_code]['count'] += 1
         new_count = rate_limit_storage[access_code]['count']
         limit = ACCESS_CODE_LIMITS.get(access_code, DAILY_ANALYSIS_LIMIT)
-        logger.info(f"📊 Usage incremented for {access_code}: {new_count}/{limit}")
+        logger.info(f"📊 Usage incremented for {mask_sensitive(access_code)}: {new_count}/{limit}")
 
 # ============================================================================
 # PHASE 2: WALLET ANALYSIS SYSTEM - BIRDEYE HELPERS
@@ -1166,7 +1201,6 @@ def probe_jupiter_quote(
 
 # Get API key from environment variable
         api_key = os.environ.get('JUPITER_API_KEY')
-        print(f"DEBUG: API key loaded: {api_key[:10]}..." if api_key else "DEBUG: NO API KEY FOUND")  # ADD THIS LINE
         if not api_key:
             logger.error("JUPITER_API_KEY not found in environment variables")
             return None
@@ -1179,10 +1213,7 @@ def probe_jupiter_quote(
             f"amount={amount_lamports}&"
             f"slippageBps=50"
         )
-        
-        # Add this debug line
-        print(f"DEBUG: Calling Jupiter Ultra API with URL: {url}")
-        
+
         # Make the request with API key in headers
         headers = {
             'x-api-key': api_key,
@@ -1190,11 +1221,6 @@ def probe_jupiter_quote(
         }
         
         response = requests.get(url, headers=headers, timeout=10)
-        
-        # Add debug output
-        print(f"DEBUG: Jupiter response status: {response.status_code}")
-        print(f"DEBUG: Jupiter response body: {response.text[:500]}")
-        
         response.raise_for_status()
         data = response.json()
         
@@ -1863,6 +1889,7 @@ def health():
 
 
 @app.route('/analyze', methods=['POST'])
+@limiter.limit("10 per minute")
 def analyze_token():
     """
     Main analysis endpoint.
@@ -1870,13 +1897,7 @@ def analyze_token():
     """
     try:
         # --- 1. INPUT VALIDATION ---
-        # DEBUG: Log raw request data
-        print("=" * 50)
-        print("DEBUG: Request received")
-        print(f"Content-Type: {request.headers.get('Content-Type')}")
-        
         data = request.get_json()
-        print(f"Parsed JSON: {data}")
 
         if not data or 'token_address' not in data:
             logger.warning("Request missing token_address field")
@@ -1900,13 +1921,13 @@ def analyze_token():
             }), 400
 
         # NEW CODE STARTS HERE - Update the log message to include access code
-        logger.info(f"📥 Analysis request received for token: {token_address[:8]}... (access_code: {access_code})")
+        logger.info(f"📥 Analysis request received for token: {token_address[:8]}... (access_code: {mask_sensitive(access_code)})")
 
         # Check rate limit BEFORE doing any expensive operations
         rate_check = check_rate_limit(access_code)
         
         if not rate_check['allowed']:
-            logger.warning(f"⛔ Rate limit exceeded for access code: {access_code}")
+            logger.warning(f"⛔ Rate limit exceeded for access code: {mask_sensitive(access_code)}")
             return jsonify({
                 'error': 'Daily analysis limit exceeded',
                 'limit': rate_check['limit'],
@@ -2029,6 +2050,7 @@ def clear_cache():
 # ============================================================================
 
 @app.route('/api/wallet/analyze', methods=['POST'])
+@limiter.limit("10 per minute")
 def analyze_wallet():
     """
     Endpoint to analyze a Solana wallet's trading intelligence.
@@ -2091,7 +2113,7 @@ def analyze_wallet():
         rate_check = check_rate_limit(access_code)
         
         if not rate_check['allowed']:
-            logger.warning(f"⛔ Rate limit exceeded for access code: {access_code}")
+            logger.warning(f"⛔ Rate limit exceeded for access code: {mask_sensitive(access_code)}")
             return jsonify({
                 'success': False,
                 'error': 'Daily analysis limit exceeded',
@@ -2532,8 +2554,16 @@ def build_transition_matrix():
         }), 500
 
 @app.route('/analysis/debug-transitions', methods=['GET'])
+@limiter.limit("5 per minute")
 def debug_transitions():
     """Get detailed debug information about stored transitions."""
+    # Security: Only allow in development mode
+    if os.environ.get('FLASK_ENV') != 'development':
+        return jsonify({
+            'success': False,
+            'error': 'Debug endpoints disabled in production'
+        }), 403
+
     # Check if analyzer is initialized
     if state_analyzer is None:
         return jsonify({
@@ -3279,11 +3309,18 @@ def unsubscribe_from_push():
 
 
 @app.route('/push/test', methods=['POST'])
+@limiter.limit("3 per minute")
 def test_push_notification():
     """
     Send a test push notification.
     Useful for verifying push is working.
     """
+    # Security: Only allow in development mode
+    if os.environ.get('FLASK_ENV') != 'development':
+        return jsonify({
+            'success': False,
+            'error': 'Test endpoints disabled in production'
+        }), 403
     from web_push_service import get_push_service
     push_svc = get_push_service()
     
