@@ -2153,9 +2153,14 @@ def fetch_token_holders_birdeye(token_address: str, limit: int = 30) -> Dict:
                 # Transform to frontend-friendly format
                 holders = []
                 for holder in holders_data[:limit]:
+                    # Skip holders with empty owner addresses
+                    owner_address = holder.get('owner', '').strip()
+                    if not owner_address:
+                        continue
+
                     holders.append({
-                        'address': holder.get('token_account', ''),  # Token account address
-                        'owner': holder.get('owner', ''),  # Owner wallet address
+                        'address': owner_address,  # Owner wallet address (for analysis)
+                        'token_account': holder.get('token_account', ''),  # SPL token account
                         'uiAmount': holder.get('ui_amount', 0),  # Human-readable amount
                         'amount': holder.get('amount', '0'),  # Raw amount string
                         'decimals': holder.get('decimals', 0),
@@ -2214,12 +2219,12 @@ def get_token_holders():
         "success": true,
         "holders": [
             {
-                "address": "TokenAccountAddressHere...",  // Token account address
-                "owner": "OwnerWalletAddressHere...",     // Owner wallet address
-                "uiAmount": 1000000.5,                    // Human-readable amount
-                "amount": "1000000500000000",             // Raw amount (string)
+                "address": "OwnerWalletAddressHere...",      // Owner wallet address (for analysis)
+                "token_account": "TokenAccountAddressHere...", // SPL token account address
+                "uiAmount": 1000000.5,                       // Human-readable amount
+                "amount": "1000000500000000",                // Raw amount (string)
                 "decimals": 9,
-                "mint": "TokenMintAddressHere..."         // Token mint address
+                "mint": "TokenMintAddressHere..."            // Token mint address
             }
         ],
         "count": 30,
