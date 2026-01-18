@@ -131,7 +131,9 @@ state_analyzer = None
 
 
 # Rate limiting configuration
-DAILY_ANALYSIS_LIMIT = 10  # Default limit per access code per day
+# Anonymous users (no access code) get 10 analyses per day
+# Users with access codes can get higher limits via ACCESS_CODE_LIMITS env var
+DAILY_ANALYSIS_LIMIT = 10  # Default limit for anonymous users per day
 RATE_LIMIT_WINDOW_HOURS = 24  # Reset every 24 hours
 
 # Security: Load access codes from environment variables only
