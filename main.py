@@ -2379,6 +2379,108 @@ def get_token_holders():
 
 
 # ============================================================================
+# TOKEN SUPPLY ENDPOINT
+# ============================================================================
+
+@app.route('/api/token/supply', methods=['POST'])
+@limiter.limit("60 per minute")
+def get_token_supply():
+    """
+    Endpoint to fetch token supply for a Solana token.
+
+    This endpoint retrieves the total supply and decimals for a token
+    from the Solana blockchain. This is used to calculate holding percentages.
+
+    Request body should be JSON:
+    {
+        "token_address": "TokenMintAddressHere..."
+    }
+
+    Returns:
+    {
+        "success": true,
+        "supply": 1000000000.5,  // Total supply in human-readable format
+        "decimals": 9,
+        "raw_supply": "1000000000500000000"  // Raw supply before decimal adjustment
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data or 'token_address' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'Missing token_address in request body'
+            }), 400
+
+        token_address = data['token_address'].strip()
+
+        # Validate token address format
+        if not token_address or len(token_address) < 32:
+            logger.warning(f"⚠️ Invalid token address format: {token_address[:20]}")
+            return jsonify({
+                'success': False,
+                'error': 'Invalid token address format'
+            }), 400
+
+        logger.info(f"📊 Token supply request: {token_address[:8]}...")
+
+        # Use backend's RPC connection (more reliable than frontend's public RPC)
+        rpc_url = CHAINLINK_RPC or HELIUS_RPC
+
+        if not rpc_url:
+            return jsonify({
+                'success': False,
+                'error': 'RPC not configured'
+            }), 500
+
+        client = Client(rpc_url)
+        token_pubkey = Pubkey.from_string(token_address)
+
+        # Get token mint account info
+        mint_info = client.get_account_info(token_pubkey, encoding='jsonParsed')
+
+        if not mint_info.value or not mint_info.value.data:
+            logger.warning(f"⚠️ Token mint account not found: {token_address[:8]}")
+            return jsonify({
+                'success': False,
+                'error': 'Token mint account not found'
+            }), 404
+
+        # Parse mint data
+        parsed_data = mint_info.value.data.parsed['info']
+        raw_supply = parsed_data.get('supply', '0')
+        decimals = parsed_data.get('decimals', 9)
+
+        # Convert to human-readable format
+        supply = float(raw_supply) / (10 ** decimals)
+
+        logger.info(f"  ✓ Supply: {supply:,.2f} (decimals: {decimals})")
+
+        return jsonify({
+            'success': True,
+            'supply': supply,
+            'decimals': decimals,
+            'raw_supply': raw_supply,
+            'timestamp': int(time.time())
+        }), 200
+
+    except ValueError as e:
+        logger.error(f"❌ Invalid token address: {e}")
+        return jsonify({
+            'success': False,
+            'error': f'Invalid token address: {sanitize_error(e)}'
+        }), 400
+
+    except Exception as e:
+        logger.error(f"❌ Error fetching token supply: {e}")
+        return jsonify({
+            'success': False,
+            'error': sanitize_error(e)
+        }), 500
+
+
+# ============================================================================
 # WALLET ANALYSIS ENDPOINT
 # ============================================================================
 
