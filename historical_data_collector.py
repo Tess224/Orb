@@ -60,8 +60,20 @@ class HistoricalDataCollector:
             True if saved successfully, False otherwise
         """
         try:
+            # Sanitize token_address to prevent path traversal
+            # Only allow alphanumeric characters
+            safe_token = ''.join(c for c in token_address if c.isalnum())
+            if not safe_token or safe_token != token_address:
+                logger.error(f"Invalid token address format: {token_address[:20]}")
+                return False
+
             # Create filename: TOKEN_ADDRESS.json
-            filename = os.path.join(self.data_directory, f"{token_address}.json")
+            filename = os.path.join(self.data_directory, f"{safe_token}.json")
+
+            # Verify the resolved path is still within data_directory
+            if not os.path.abspath(filename).startswith(os.path.abspath(self.data_directory)):
+                logger.error(f"Path traversal attempt detected: {token_address[:20]}")
+                return False
             
             # Convert the snapshot dataclass to a dictionary
             snapshot_dict = asdict(snapshot)
@@ -108,8 +120,19 @@ class HistoricalDataCollector:
             List of snapshot dictionaries, empty list if no data exists
         """
         try:
-            filename = os.path.join(self.data_directory, f"{token_address}.json")
-            
+            # Sanitize token_address to prevent path traversal
+            safe_token = ''.join(c for c in token_address if c.isalnum())
+            if not safe_token or safe_token != token_address:
+                logger.error(f"Invalid token address format: {token_address[:20]}")
+                return []
+
+            filename = os.path.join(self.data_directory, f"{safe_token}.json")
+
+            # Verify the resolved path is still within data_directory
+            if not os.path.abspath(filename).startswith(os.path.abspath(self.data_directory)):
+                logger.error(f"Path traversal attempt detected: {token_address[:20]}")
+                return []
+
             if not os.path.exists(filename):
                 return []
             
