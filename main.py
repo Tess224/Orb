@@ -2154,11 +2154,12 @@ def fetch_token_holders_birdeye(token_address: str, limit: int = 30) -> Dict:
                 holders = []
                 for holder in holders_data[:limit]:
                     holders.append({
-                        'address': holder.get('address', ''),
-                        'owner': holder.get('owner', ''),
-                        'uiAmount': holder.get('uiAmount', 0),
+                        'address': holder.get('token_account', ''),  # Token account address
+                        'owner': holder.get('owner', ''),  # Owner wallet address
+                        'uiAmount': holder.get('ui_amount', 0),  # Human-readable amount
+                        'amount': holder.get('amount', '0'),  # Raw amount string
                         'decimals': holder.get('decimals', 0),
-                        'percentage': holder.get('percentage', 0)
+                        'mint': holder.get('mint', '')  # Token mint address
                     })
 
                 logger.info(f"  ✓ Retrieved {len(holders)} holders")
@@ -2213,11 +2214,12 @@ def get_token_holders():
         "success": true,
         "holders": [
             {
-                "address": "WalletAddressHere...",
-                "owner": "OwnerAddressHere...",
-                "uiAmount": 1000000,
+                "address": "TokenAccountAddressHere...",  // Token account address
+                "owner": "OwnerWalletAddressHere...",     // Owner wallet address
+                "uiAmount": 1000000.5,                    // Human-readable amount
+                "amount": "1000000500000000",             // Raw amount (string)
                 "decimals": 9,
-                "percentage": 5.25
+                "mint": "TokenMintAddressHere..."         // Token mint address
             }
         ],
         "count": 30,
