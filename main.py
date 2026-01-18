@@ -2103,6 +2103,190 @@ def clear_cache():
 
 
 # ============================================================================
+# TOKEN HOLDERS ENDPOINT
+# ============================================================================
+
+def fetch_token_holders_birdeye(token_address: str, limit: int = 30) -> Dict:
+    """
+    Fetches token holder data from BirdEye API.
+
+    Args:
+        token_address: Solana token mint address
+        limit: Maximum number of holders to retrieve (default: 30)
+
+    Returns:
+        Dictionary containing holder data with addresses and percentages
+    """
+    try:
+        if not BIRDEYE_API_KEY:
+            logger.warning("⚠️ BIRDEYE_API_KEY not configured")
+            return {
+                'success': False,
+                'error': 'BirdEye API key not configured',
+                'holders': []
+            }
+
+        # BirdEye v3 token holder endpoint
+        url = "https://public-api.birdeye.so/defi/v3/token/holder"
+
+        params = {
+            'address': token_address,
+            'offset': 0,
+            'limit': min(limit, 100)  # BirdEye max is usually 100
+        }
+
+        headers = {
+            'X-API-KEY': BIRDEYE_API_KEY,
+            'accept': 'application/json'
+        }
+
+        logger.info(f"📊 Fetching top {limit} holders for {token_address[:8]}...")
+
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+
+            if data.get('success'):
+                holders_data = data.get('data', {}).get('items', [])
+
+                # Transform to frontend-friendly format
+                holders = []
+                for holder in holders_data[:limit]:
+                    holders.append({
+                        'address': holder.get('address', ''),
+                        'owner': holder.get('owner', ''),
+                        'uiAmount': holder.get('uiAmount', 0),
+                        'decimals': holder.get('decimals', 0),
+                        'percentage': holder.get('percentage', 0)
+                    })
+
+                logger.info(f"  ✓ Retrieved {len(holders)} holders")
+
+                return {
+                    'success': True,
+                    'holders': holders,
+                    'count': len(holders)
+                }
+            else:
+                logger.warning(f"  ⚠️ BirdEye API returned success=false")
+                return {
+                    'success': False,
+                    'error': 'BirdEye API returned unsuccessful response',
+                    'holders': []
+                }
+        else:
+            logger.error(f"  ❌ BirdEye API error: {response.status_code}")
+            return {
+                'success': False,
+                'error': f'BirdEye API error: {response.status_code}',
+                'holders': []
+            }
+
+    except Exception as e:
+        logger.error(f"❌ Error fetching holders from BirdEye: {e}")
+        return {
+            'success': False,
+            'error': sanitize_error(e),
+            'holders': []
+        }
+
+
+@app.route('/api/token/holders', methods=['POST'])
+@limiter.limit("20 per minute")
+def get_token_holders():
+    """
+    Endpoint to fetch token holder data.
+
+    This endpoint retrieves the top token holders for a given Solana token
+    using the BirdEye API. This is used in non-privacy mode wallet analysis
+    to show which wallets hold significant portions of a token.
+
+    Request body should be JSON:
+    {
+        "token_address": "TokenMintAddressHere...",
+        "limit": 30  // Optional: number of holders to retrieve (default: 30, max: 100)
+    }
+
+    Returns:
+    {
+        "success": true,
+        "holders": [
+            {
+                "address": "WalletAddressHere...",
+                "owner": "OwnerAddressHere...",
+                "uiAmount": 1000000,
+                "decimals": 9,
+                "percentage": 5.25
+            }
+        ],
+        "count": 30,
+        "timestamp": 1234567890
+    }
+    """
+    try:
+        # Parse the request body
+        data = request.get_json()
+
+        if not data or 'token_address' not in data:
+            logger.warning("⚠️ Token holders request missing 'token_address' field")
+            return jsonify({
+                'success': False,
+                'error': 'Missing required field: token_address'
+            }), 400
+
+        token_address = data['token_address'].strip()
+        limit = safe_int(data.get('limit', 30), default=30)
+
+        # Validate limit to prevent DoS
+        if limit < 1 or limit > 100:
+            return jsonify({
+                'success': False,
+                'error': 'Limit must be between 1 and 100'
+            }), 400
+
+        # Validate token address format
+        # Solana addresses are 32-44 characters of base58 characters
+        if not token_address or len(token_address) < 32:
+            logger.warning(f"⚠️ Invalid token address format: {token_address[:20]}")
+            return jsonify({
+                'success': False,
+                'error': 'Invalid token address format'
+            }), 400
+
+        logger.info(f"📥 Token holders request: {token_address[:8]}... (limit: {limit})")
+
+        # Fetch holders from BirdEye
+        result = fetch_token_holders_birdeye(token_address, limit)
+
+        # Add timestamp
+        result['timestamp'] = int(time.time())
+
+        if result['success']:
+            logger.info(f"✅ Token holders retrieved: {token_address[:8]} → {result['count']} holders")
+            return jsonify(result), 200
+        else:
+            logger.warning(f"⚠️ Failed to retrieve holders: {result.get('error')}")
+            return jsonify(result), 500
+
+    except ValueError as e:
+        logger.error(f"❌ Invalid input for token holders: {e}")
+        return jsonify({
+            'success': False,
+            'error': f'Invalid input: {sanitize_error(e)}',
+            'timestamp': int(time.time())
+        }), 400
+
+    except Exception as e:
+        logger.error(f"❌ Error in token holders endpoint: {e}")
+        return jsonify({
+            'success': False,
+            'error': sanitize_error(e),
+            'timestamp': int(time.time())
+        }), 500
+
+
+# ============================================================================
 # WALLET ANALYSIS ENDPOINT
 # ============================================================================
 
