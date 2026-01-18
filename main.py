@@ -47,12 +47,12 @@ if os.environ.get('FLASK_ENV') != 'development':
     Talisman(app,
              force_https=True,
              strict_transport_security=True,
+             strict_transport_security_max_age=31536000,
              content_security_policy={
-                 'default-src': "'self'",
-                 'script-src': "'self' 'unsafe-inline'",
-                 'style-src': "'self' 'unsafe-inline'",
-                 'img-src': "'self' data: https:",
-             })
+                 'default-src': "'none'",  # API backend - deny all by default
+                 'connect-src': "'self'",  # Allow API calls to self
+             },
+             content_security_policy_nonce_in=['script-src'])
 
 # Security: Add rate limiting
 limiter = Limiter(
@@ -83,6 +83,35 @@ def mask_sensitive(value: str, show_chars: int = 4) -> str:
     if not value or len(value) <= show_chars:
         return '[REDACTED]'
     return f"{value[:show_chars]}{'*' * (len(value) - show_chars)}"
+
+def safe_int(value, default: int = 0) -> int:
+    """Safely convert value to int with fallback"""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+def safe_float(value, default: float = 0.0) -> float:
+    """Safely convert value to float with fallback"""
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+def sanitize_error(e: Exception) -> str:
+    """
+    Security: Sanitize error messages for client responses.
+    Prevents information disclosure through exception details.
+    """
+    is_production = os.environ.get('FLASK_ENV') == 'production'
+
+    if is_production:
+        # In production, return generic error message
+        return "An error occurred while processing your request"
+    else:
+        # In development, include error details for debugging
+        return str(e)
+
 wallet_analysis_cache: Dict[str, Dict] = {}
 # Rate limiting storage - tracks how many analyses each access code has used
 alert_manager = MetricAlertManager()
@@ -105,13 +134,25 @@ state_analyzer = None
 DAILY_ANALYSIS_LIMIT = 10  # Default limit per access code per day
 RATE_LIMIT_WINDOW_HOURS = 24  # Reset every 24 hours
 
-# Access code limits (you can customize these for different users)
-ACCESS_CODE_LIMITS = {
-    'ADMIN-2025': 999,  # Your admin code gets unlimited analyses
-    'ALPHA-TEST-1': 10,
-    'ALPHA-TEST-2': 10,
-    'BETA-TEST-1': 5,
-}
+# Security: Load access codes from environment variables only
+# Format: ACCESS_CODE_LIMITS=code1:limit1,code2:limit2
+# Example: ACCESS_CODE_LIMITS=ADMIN-CODE:999,BETA-USER:10
+def load_access_code_limits():
+    """Load access code limits from environment variable"""
+    limits = {}
+    env_limits = os.environ.get('ACCESS_CODE_LIMITS', '')
+    if env_limits:
+        for pair in env_limits.split(','):
+            if ':' in pair:
+                code, limit = pair.split(':', 1)
+                try:
+                    limits[code.strip()] = int(limit.strip())
+                except ValueError:
+                    logger.warning(f"Invalid limit format in ACCESS_CODE_LIMITS: {pair}")
+    return limits
+
+ACCESS_CODE_LIMITS = load_access_code_limits()
+ADMIN_ACCESS_CODE = os.environ.get('ADMIN_ACCESS_CODE', '')  # Admin code from environment
 
 # ============================================================================
 # RATE LIMITING SYSTEM
@@ -2010,9 +2051,10 @@ def analyze_token():
         return jsonify(result), 200
 
     except Exception as e:
-        logger.error(f"❌ Error during analysis: {str(e)}")
+        # Security: Log full error server-side, return sanitized error to client
+        logger.error(f"❌ Error during analysis: {str(e)}", exc_info=True)
         return jsonify({
-            'error': str(e),
+            'error': sanitize_error(e),
             'status': 'error',
             'timestamp': int(time.time())
         }), 500
@@ -2020,16 +2062,29 @@ def analyze_token():
 
 
 @app.route('/clear-cache', methods=['POST'])
+@limiter.limit("5 per minute")
 def clear_cache():
     """
     Endpoint to manually clear the analysis cache.
     Useful for testing or if you want to force fresh analysis.
+    Requires admin access code for security.
     """
+    # Security: Require admin authentication
+    data = request.get_json() or {}
+    access_code = data.get('access_code', '')
+
+    if not ADMIN_ACCESS_CODE or access_code != ADMIN_ACCESS_CODE:
+        logger.warning(f"Unauthorized cache clear attempt")
+        return jsonify({
+            'status': 'error',
+            'error': 'Admin access required'
+        }), 403
+
     global analysis_cache, historical_slippage
-    
+
     cache_size = len(analysis_cache)
     history_size = len(historical_slippage)
-    
+
     analysis_cache.clear()
     historical_slippage.clear()
     
@@ -2122,8 +2177,8 @@ def analyze_wallet():
                 'message': f"You have used all {rate_check['limit']} daily analyses."
             }), 429
         # NEW CODE ENDS HERE
-        # Extract optional parameters
-        holding_percent = float(data.get('holding_percent', 0.0))
+        # Extract optional parameters with safe conversion
+        holding_percent = safe_float(data.get('holding_percent', 0.0), default=0.0)
         current_token_address = data.get('current_token_address', None)
         
         logger.info(f"📥 Wallet analysis request: {wallet_address[:8]}...")
@@ -2234,12 +2289,11 @@ def tracking_status():
         return jsonify(status), 200
 
     except Exception as e:
-        logger.error(f"❌ Error in tracking_status: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        # Security: Log full error with traceback server-side only
+        logger.error(f"❌ Error in tracking_status: {e}", exc_info=True)
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': sanitize_error(e)
         }), 500
 
 
@@ -2496,9 +2550,9 @@ def build_transition_matrix():
     try:
         data = request.get_json() or {}
         access_code = data.get('access_code', '')
-        
-        # Only allow with proper access code
-        if access_code != 'ADMIN-2025':
+
+        # Security: Only allow with admin access code from environment
+        if not ADMIN_ACCESS_CODE or access_code != ADMIN_ACCESS_CODE:
             return jsonify({
                 'error': 'Admin access required',
                 'status': 'unauthorized'
@@ -2690,7 +2744,8 @@ def get_scenario_distribution(token_address: str):
                 'status': 'error'
             }), 503
         
-        projection_minutes = int(request.args.get('projection_minutes', 15))
+        # Security: Safe integer conversion with validation
+        projection_minutes = safe_int(request.args.get('projection_minutes', 15), default=15)
         projection_minutes = min(60, max(5, projection_minutes))
         
         logger.info(f"🎲 Generating scenario distribution for {token_address[:8]}... ({projection_minutes}min)")
@@ -3085,7 +3140,9 @@ def get_alert_status(token_address):
 def get_token_alerts(token_address):
     """Get alerts for a specific token."""
     try:
-        limit = int(request.args.get('limit', 20))
+        # Security: Safe integer conversion with max limit to prevent DoS
+        limit = safe_int(request.args.get('limit', 20), default=20)
+        limit = min(100, max(1, limit))  # Clamp between 1-100
         alerts = alert_manager.get_alerts(token_address, limit)
         
         return jsonify({
@@ -3470,4 +3527,12 @@ initialize_system()
 # Gunicorn ignores this block
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Security: Use 127.0.0.1 for local dev, 0.0.0.0 for containerized deployments (Railway, Docker)
+    # Railway/Docker needs 0.0.0.0 to accept connections from reverse proxy
+    host = os.environ.get('FLASK_HOST', '127.0.0.1')
+    debug = os.environ.get('FLASK_ENV') == 'development'
+
+    if host == '0.0.0.0' and os.environ.get('FLASK_ENV') != 'production':
+        logger.warning("⚠️ Binding to 0.0.0.0 - ensure you're behind a reverse proxy!")
+
+    app.run(host=host, port=port, debug=debug)
