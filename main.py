@@ -922,7 +922,92 @@ def calculate_wallet_iq(
             base_hold_score = 50  # Long-term holder (week+)
         
         logger.info(f"  ✓ Average hold time: {avg_hold_hours:.1f} hours → score: {base_hold_score}")
-        
+
+        # ====================================================================
+        # STEP 6.5: CALCULATE TOP TOKENS SCORE (PORTFOLIO QUALITY)
+        # ====================================================================
+
+        # This matches the frontend's portfolio quality check
+        # Rewards wallets that hold tokens long-term (>1 week)
+        top_tokens_score = 0
+
+        try:
+            logger.info(f"📊 Checking portfolio quality (top 5 tokens)...")
+            rpc_url = CHAINLINK_RPC or HELIUS_RPC
+            client = Client(rpc_url)
+
+            # Get wallet's token accounts
+            wallet_pubkey = Pubkey.from_string(wallet_address)
+            token_program = Pubkey.from_string('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
+
+            response = client.get_token_accounts_by_owner(
+                wallet_pubkey,
+                {"programId": token_program},
+                {"encoding": "jsonParsed"}
+            )
+
+            if response.value:
+                # Parse token balances
+                token_balances = []
+                for account in response.value:
+                    try:
+                        parsed_info = account.account.data.parsed['info']
+                        ui_amount = float(parsed_info['tokenAmount']['uiAmount'] or 0)
+
+                        if ui_amount > 0:
+                            token_balances.append({
+                                'mint': parsed_info['mint'],
+                                'balance': ui_amount,
+                                'pubkey': str(account.pubkey)
+                            })
+                    except (KeyError, ValueError, TypeError):
+                        continue
+
+                # Sort by balance and take top 5
+                token_balances.sort(key=lambda x: x['balance'], reverse=True)
+                top_5_tokens = token_balances[:5]
+
+                logger.info(f"  Found {len(token_balances)} token holdings, analyzing top {len(top_5_tokens)}")
+
+                # Check age of each top token (1 week = 7 * 24 * 60 * 60 seconds)
+                one_week_ago = time.time() - (7 * 24 * 60 * 60)
+
+                for token in top_5_tokens:
+                    try:
+                        # Get first signature for this token account to determine creation time
+                        token_account_pubkey = Pubkey.from_string(token['pubkey'])
+                        sigs_response = client.get_signatures_for_address(
+                            token_account_pubkey,
+                            limit=1
+                        )
+
+                        if sigs_response.value and len(sigs_response.value) > 0:
+                            # The last signature is the oldest (creation)
+                            first_sig = sigs_response.value[-1]
+                            creation_time = first_sig.block_time
+
+                            if creation_time and creation_time < one_week_ago:
+                                top_tokens_score += 10
+                                logger.info(f"    ✓ Token {token['mint'][:8]}... held >{int((time.time() - creation_time) / 86400)}d → +10 pts")
+                            else:
+                                logger.info(f"    - Token {token['mint'][:8]}... held <1w → +0 pts")
+
+                    except Exception as token_err:
+                        logger.warning(f"    ⚠️ Could not check token {token['mint'][:8]}...: {token_err}")
+                        continue
+
+                logger.info(f"  ✓ Portfolio quality score: {top_tokens_score}/50")
+
+        except Exception as e:
+            logger.warning(f"  ⚠️ Could not fetch token accounts: {e}")
+            top_tokens_score = 0
+
+        # Blend base hold score with portfolio quality (70% base + 30% portfolio)
+        # This matches the frontend formula exactly
+        hold_score = min(50, max(0, round(base_hold_score * 0.7 + top_tokens_score * 0.3)))
+
+        logger.info(f"  ✓ Final hold score: {hold_score} (base: {base_hold_score}, portfolio: {top_tokens_score})")
+
         # ====================================================================
         # STEP 7: CALCULATE TRADE FREQUENCY SCORE
         # ====================================================================
@@ -962,7 +1047,7 @@ def calculate_wallet_iq(
         # - 10% weight on position size (conviction in holdings)
         
         final_iq = (
-            (base_hold_score / 50.0 * 100) * 0.70 +  # Normalize hold score to 0-100, then apply 70% weight
+            (hold_score / 50.0 * 100) * 0.70 +  # Normalize blended hold score to 0-100, then apply 70% weight
             win_rate * 0.10 +
             trades_score * 0.10 +
             normalized_holdings * 0.10
@@ -1003,7 +1088,7 @@ def calculate_wallet_iq(
             'tradesScore': trades_score,
             'portfolio': 0,  # Could be enhanced with portfolio value calculation
             'pattern': pattern,
-            'holdScore': base_hold_score,
+            'holdScore': hold_score,  # Now uses blended score (base + portfolio quality)
             'firstBuyTime': first_buy_time
         }
         
@@ -1225,7 +1310,7 @@ def get_probe_sizes_for_liquidity(liquidity_usd: float, sol_price_usd: float) ->
         'percentage_of_pool': (stress_size / liquidity_usd) * 100
     })
     
-    logger.info(f"  → Probes: {[f'${p['usd_amount']}' for p in probe_configs]}")
+    logger.info(f"  → Probes: {['$' + str(p['usd_amount']) for p in probe_configs]}")
     
     return probe_configs
 
