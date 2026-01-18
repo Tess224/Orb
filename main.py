@@ -2531,6 +2531,82 @@ def get_token_supply():
 
 
 # ============================================================================
+# ACCESS CODE STATUS ENDPOINT
+# ============================================================================
+
+@app.route('/api/access/status', methods=['POST'])
+@limiter.limit("60 per minute")
+def get_access_status():
+    """
+    Check the rate limit status for a given access code.
+
+    This endpoint returns information about an access code's usage:
+    - Daily limit
+    - Analyses used today
+    - Analyses remaining
+    - Reset time
+
+    Request body should be JSON:
+    {
+        "access_code": "YOUR-ACCESS-CODE"
+    }
+
+    Returns:
+    {
+        "success": true,
+        "access_code": "ADMIN-****",  // Masked for security
+        "limit": 1000,
+        "used": 15,
+        "remaining": 985,
+        "resets_at": 1234567890,
+        "valid": true
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data or 'access_code' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'Missing access_code in request body'
+            }), 400
+
+        access_code = data['access_code'].strip()
+
+        # Check rate limit status (this doesn't increment the counter)
+        rate_check = check_rate_limit(access_code)
+
+        # Get the limit for this code
+        limit = ACCESS_CODE_LIMITS.get(access_code, DAILY_ANALYSIS_LIMIT)
+
+        # Calculate used count
+        used = limit - rate_check['remaining']
+
+        # Mask the access code for security (show first 5 chars + ***)
+        masked_code = access_code[:5] + ('*' * (len(access_code) - 5)) if len(access_code) > 5 else '***'
+
+        logger.info(f"📊 Access status check: {masked_code} → {used}/{limit} used")
+
+        return jsonify({
+            'success': True,
+            'access_code': masked_code,
+            'limit': limit,
+            'used': used,
+            'remaining': rate_check['remaining'],
+            'resets_at': rate_check['resets_at'],
+            'valid': True,
+            'timestamp': int(time.time())
+        }), 200
+
+    except Exception as e:
+        logger.error(f"❌ Error checking access status: {e}")
+        return jsonify({
+            'success': False,
+            'error': sanitize_error(e)
+        }), 500
+
+
+# ============================================================================
 # WALLET ANALYSIS ENDPOINT
 # ============================================================================
 
