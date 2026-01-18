@@ -47,12 +47,12 @@ if os.environ.get('FLASK_ENV') != 'development':
     Talisman(app,
              force_https=True,
              strict_transport_security=True,
+             strict_transport_security_max_age=31536000,
              content_security_policy={
-                 'default-src': "'self'",
-                 'script-src': "'self' 'unsafe-inline'",
-                 'style-src': "'self' 'unsafe-inline'",
-                 'img-src': "'self' data: https:",
-             })
+                 'default-src': "'none'",  # API backend - deny all by default
+                 'connect-src': "'self'",  # Allow API calls to self
+             },
+             content_security_policy_nonce_in=['script-src'])
 
 # Security: Add rate limiting
 limiter = Limiter(
@@ -83,6 +83,35 @@ def mask_sensitive(value: str, show_chars: int = 4) -> str:
     if not value or len(value) <= show_chars:
         return '[REDACTED]'
     return f"{value[:show_chars]}{'*' * (len(value) - show_chars)}"
+
+def safe_int(value, default: int = 0) -> int:
+    """Safely convert value to int with fallback"""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+def safe_float(value, default: float = 0.0) -> float:
+    """Safely convert value to float with fallback"""
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+def sanitize_error(e: Exception) -> str:
+    """
+    Security: Sanitize error messages for client responses.
+    Prevents information disclosure through exception details.
+    """
+    is_production = os.environ.get('FLASK_ENV') == 'production'
+
+    if is_production:
+        # In production, return generic error message
+        return "An error occurred while processing your request"
+    else:
+        # In development, include error details for debugging
+        return str(e)
+
 wallet_analysis_cache: Dict[str, Dict] = {}
 # Rate limiting storage - tracks how many analyses each access code has used
 alert_manager = MetricAlertManager()
@@ -102,16 +131,30 @@ state_analyzer = None
 
 
 # Rate limiting configuration
-DAILY_ANALYSIS_LIMIT = 10  # Default limit per access code per day
+# Anonymous users (no access code) get 10 analyses per day
+# Users with access codes can get higher limits via ACCESS_CODE_LIMITS env var
+DAILY_ANALYSIS_LIMIT = 10  # Default limit for anonymous users per day
 RATE_LIMIT_WINDOW_HOURS = 24  # Reset every 24 hours
 
-# Access code limits (you can customize these for different users)
-ACCESS_CODE_LIMITS = {
-    'ADMIN-2025': 999,  # Your admin code gets unlimited analyses
-    'ALPHA-TEST-1': 10,
-    'ALPHA-TEST-2': 10,
-    'BETA-TEST-1': 5,
-}
+# Security: Load access codes from environment variables only
+# Format: ACCESS_CODE_LIMITS=code1:limit1,code2:limit2
+# Example: ACCESS_CODE_LIMITS=ADMIN-CODE:999,BETA-USER:10
+def load_access_code_limits():
+    """Load access code limits from environment variable"""
+    limits = {}
+    env_limits = os.environ.get('ACCESS_CODE_LIMITS', '')
+    if env_limits:
+        for pair in env_limits.split(','):
+            if ':' in pair:
+                code, limit = pair.split(':', 1)
+                try:
+                    limits[code.strip()] = int(limit.strip())
+                except ValueError:
+                    logger.warning(f"Invalid limit format in ACCESS_CODE_LIMITS: {pair}")
+    return limits
+
+ACCESS_CODE_LIMITS = load_access_code_limits()
+ADMIN_ACCESS_CODE = os.environ.get('ADMIN_ACCESS_CODE', '')  # Admin code from environment
 
 # ============================================================================
 # RATE LIMITING SYSTEM
@@ -2010,9 +2053,10 @@ def analyze_token():
         return jsonify(result), 200
 
     except Exception as e:
-        logger.error(f"❌ Error during analysis: {str(e)}")
+        # Security: Log full error server-side, return sanitized error to client
+        logger.error(f"❌ Error during analysis: {str(e)}", exc_info=True)
         return jsonify({
-            'error': str(e),
+            'error': sanitize_error(e),
             'status': 'error',
             'timestamp': int(time.time())
         }), 500
@@ -2020,16 +2064,29 @@ def analyze_token():
 
 
 @app.route('/clear-cache', methods=['POST'])
+@limiter.limit("5 per minute")
 def clear_cache():
     """
     Endpoint to manually clear the analysis cache.
     Useful for testing or if you want to force fresh analysis.
+    Requires admin access code for security.
     """
+    # Security: Require admin authentication
+    data = request.get_json() or {}
+    access_code = data.get('access_code', '')
+
+    if not ADMIN_ACCESS_CODE or access_code != ADMIN_ACCESS_CODE:
+        logger.warning(f"Unauthorized cache clear attempt")
+        return jsonify({
+            'status': 'error',
+            'error': 'Admin access required'
+        }), 403
+
     global analysis_cache, historical_slippage
-    
+
     cache_size = len(analysis_cache)
     history_size = len(historical_slippage)
-    
+
     analysis_cache.clear()
     historical_slippage.clear()
     
@@ -2043,6 +2100,190 @@ def clear_cache():
             'historical_records': history_size
         }
     }), 200
+
+
+# ============================================================================
+# TOKEN HOLDERS ENDPOINT
+# ============================================================================
+
+def fetch_token_holders_birdeye(token_address: str, limit: int = 30) -> Dict:
+    """
+    Fetches token holder data from BirdEye API.
+
+    Args:
+        token_address: Solana token mint address
+        limit: Maximum number of holders to retrieve (default: 30)
+
+    Returns:
+        Dictionary containing holder data with addresses and percentages
+    """
+    try:
+        if not BIRDEYE_API_KEY:
+            logger.warning("⚠️ BIRDEYE_API_KEY not configured")
+            return {
+                'success': False,
+                'error': 'BirdEye API key not configured',
+                'holders': []
+            }
+
+        # BirdEye v3 token holder endpoint
+        url = "https://public-api.birdeye.so/defi/v3/token/holder"
+
+        params = {
+            'address': token_address,
+            'offset': 0,
+            'limit': min(limit, 100)  # BirdEye max is usually 100
+        }
+
+        headers = {
+            'X-API-KEY': BIRDEYE_API_KEY,
+            'accept': 'application/json'
+        }
+
+        logger.info(f"📊 Fetching top {limit} holders for {token_address[:8]}...")
+
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+
+            if data.get('success'):
+                holders_data = data.get('data', {}).get('items', [])
+
+                # Transform to frontend-friendly format
+                holders = []
+                for holder in holders_data[:limit]:
+                    holders.append({
+                        'address': holder.get('address', ''),
+                        'owner': holder.get('owner', ''),
+                        'uiAmount': holder.get('uiAmount', 0),
+                        'decimals': holder.get('decimals', 0),
+                        'percentage': holder.get('percentage', 0)
+                    })
+
+                logger.info(f"  ✓ Retrieved {len(holders)} holders")
+
+                return {
+                    'success': True,
+                    'holders': holders,
+                    'count': len(holders)
+                }
+            else:
+                logger.warning(f"  ⚠️ BirdEye API returned success=false")
+                return {
+                    'success': False,
+                    'error': 'BirdEye API returned unsuccessful response',
+                    'holders': []
+                }
+        else:
+            logger.error(f"  ❌ BirdEye API error: {response.status_code}")
+            return {
+                'success': False,
+                'error': f'BirdEye API error: {response.status_code}',
+                'holders': []
+            }
+
+    except Exception as e:
+        logger.error(f"❌ Error fetching holders from BirdEye: {e}")
+        return {
+            'success': False,
+            'error': sanitize_error(e),
+            'holders': []
+        }
+
+
+@app.route('/api/token/holders', methods=['POST'])
+@limiter.limit("20 per minute")
+def get_token_holders():
+    """
+    Endpoint to fetch token holder data.
+
+    This endpoint retrieves the top token holders for a given Solana token
+    using the BirdEye API. This is used in non-privacy mode wallet analysis
+    to show which wallets hold significant portions of a token.
+
+    Request body should be JSON:
+    {
+        "token_address": "TokenMintAddressHere...",
+        "limit": 30  // Optional: number of holders to retrieve (default: 30, max: 100)
+    }
+
+    Returns:
+    {
+        "success": true,
+        "holders": [
+            {
+                "address": "WalletAddressHere...",
+                "owner": "OwnerAddressHere...",
+                "uiAmount": 1000000,
+                "decimals": 9,
+                "percentage": 5.25
+            }
+        ],
+        "count": 30,
+        "timestamp": 1234567890
+    }
+    """
+    try:
+        # Parse the request body
+        data = request.get_json()
+
+        if not data or 'token_address' not in data:
+            logger.warning("⚠️ Token holders request missing 'token_address' field")
+            return jsonify({
+                'success': False,
+                'error': 'Missing required field: token_address'
+            }), 400
+
+        token_address = data['token_address'].strip()
+        limit = safe_int(data.get('limit', 30), default=30)
+
+        # Validate limit to prevent DoS
+        if limit < 1 or limit > 100:
+            return jsonify({
+                'success': False,
+                'error': 'Limit must be between 1 and 100'
+            }), 400
+
+        # Validate token address format
+        # Solana addresses are 32-44 characters of base58 characters
+        if not token_address or len(token_address) < 32:
+            logger.warning(f"⚠️ Invalid token address format: {token_address[:20]}")
+            return jsonify({
+                'success': False,
+                'error': 'Invalid token address format'
+            }), 400
+
+        logger.info(f"📥 Token holders request: {token_address[:8]}... (limit: {limit})")
+
+        # Fetch holders from BirdEye
+        result = fetch_token_holders_birdeye(token_address, limit)
+
+        # Add timestamp
+        result['timestamp'] = int(time.time())
+
+        if result['success']:
+            logger.info(f"✅ Token holders retrieved: {token_address[:8]} → {result['count']} holders")
+            return jsonify(result), 200
+        else:
+            logger.warning(f"⚠️ Failed to retrieve holders: {result.get('error')}")
+            return jsonify(result), 500
+
+    except ValueError as e:
+        logger.error(f"❌ Invalid input for token holders: {e}")
+        return jsonify({
+            'success': False,
+            'error': f'Invalid input: {sanitize_error(e)}',
+            'timestamp': int(time.time())
+        }), 400
+
+    except Exception as e:
+        logger.error(f"❌ Error in token holders endpoint: {e}")
+        return jsonify({
+            'success': False,
+            'error': sanitize_error(e),
+            'timestamp': int(time.time())
+        }), 500
 
 
 # ============================================================================
@@ -2122,8 +2363,8 @@ def analyze_wallet():
                 'message': f"You have used all {rate_check['limit']} daily analyses."
             }), 429
         # NEW CODE ENDS HERE
-        # Extract optional parameters
-        holding_percent = float(data.get('holding_percent', 0.0))
+        # Extract optional parameters with safe conversion
+        holding_percent = safe_float(data.get('holding_percent', 0.0), default=0.0)
         current_token_address = data.get('current_token_address', None)
         
         logger.info(f"📥 Wallet analysis request: {wallet_address[:8]}...")
@@ -2234,12 +2475,11 @@ def tracking_status():
         return jsonify(status), 200
 
     except Exception as e:
-        logger.error(f"❌ Error in tracking_status: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        # Security: Log full error with traceback server-side only
+        logger.error(f"❌ Error in tracking_status: {e}", exc_info=True)
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': sanitize_error(e)
         }), 500
 
 
@@ -2496,9 +2736,9 @@ def build_transition_matrix():
     try:
         data = request.get_json() or {}
         access_code = data.get('access_code', '')
-        
-        # Only allow with proper access code
-        if access_code != 'ADMIN-2025':
+
+        # Security: Only allow with admin access code from environment
+        if not ADMIN_ACCESS_CODE or access_code != ADMIN_ACCESS_CODE:
             return jsonify({
                 'error': 'Admin access required',
                 'status': 'unauthorized'
@@ -2690,7 +2930,8 @@ def get_scenario_distribution(token_address: str):
                 'status': 'error'
             }), 503
         
-        projection_minutes = int(request.args.get('projection_minutes', 15))
+        # Security: Safe integer conversion with validation
+        projection_minutes = safe_int(request.args.get('projection_minutes', 15), default=15)
         projection_minutes = min(60, max(5, projection_minutes))
         
         logger.info(f"🎲 Generating scenario distribution for {token_address[:8]}... ({projection_minutes}min)")
@@ -3085,7 +3326,9 @@ def get_alert_status(token_address):
 def get_token_alerts(token_address):
     """Get alerts for a specific token."""
     try:
-        limit = int(request.args.get('limit', 20))
+        # Security: Safe integer conversion with max limit to prevent DoS
+        limit = safe_int(request.args.get('limit', 20), default=20)
+        limit = min(100, max(1, limit))  # Clamp between 1-100
         alerts = alert_manager.get_alerts(token_address, limit)
         
         return jsonify({
@@ -3470,4 +3713,12 @@ initialize_system()
 # Gunicorn ignores this block
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Security: Use 127.0.0.1 for local dev, 0.0.0.0 for containerized deployments (Railway, Docker)
+    # Railway/Docker needs 0.0.0.0 to accept connections from reverse proxy
+    host = os.environ.get('FLASK_HOST', '127.0.0.1')
+    debug = os.environ.get('FLASK_ENV') == 'development'
+
+    if host == '0.0.0.0' and os.environ.get('FLASK_ENV') != 'production':
+        logger.warning("⚠️ Binding to 0.0.0.0 - ensure you're behind a reverse proxy!")
+
+    app.run(host=host, port=port, debug=debug)

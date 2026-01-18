@@ -63,21 +63,21 @@ class WebPushService:
         self.data_dir.mkdir(exist_ok=True)
         self.subscriptions_file = self.data_dir / "push_subscriptions.json"
         
-        # Load VAPID keys from environment
+        # Security: Load VAPID keys from environment (no defaults)
         self.vapid_public_key = os.environ.get('VAPID_PUBLIC_KEY', '')
         self.vapid_private_key = os.environ.get('VAPID_PRIVATE_KEY', '')
-        self.vapid_email = os.environ.get('VAPID_EMAIL', 'admin@example.com')
-        
+        self.vapid_email = os.environ.get('VAPID_EMAIL', '')
+
         # Store subscriptions: {subscription_id: PushSubscription}
         self.subscriptions: Dict[str, PushSubscription] = {}
-        
+
         # Load existing subscriptions
         self._load_subscriptions()
-        
-        # Check if properly configured
-        if not self.vapid_public_key or not self.vapid_private_key:
-            logger.warning("⚠️ VAPID keys not configured. Web Push will not work.")
-            logger.warning("   Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY environment variables.")
+
+        # Check if properly configured (all three required)
+        if not self.vapid_public_key or not self.vapid_private_key or not self.vapid_email:
+            logger.warning("⚠️ VAPID keys/email not configured. Web Push will not work.")
+            logger.warning("⚠️ Set VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, and VAPID_EMAIL environment variables.")
             self.configured = False
         else:
             self.configured = True
