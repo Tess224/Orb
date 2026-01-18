@@ -262,60 +262,77 @@ def fetch_birdeye_win_rate(wallet_address: str) -> Optional[float]:
         Win rate as a percentage (0-100), or None if data unavailable
     """
     try:
-        # BirdEye's PnL summary endpoint provides win/loss statistics
-        url = f"https://public-api.birdeye.so/wallet/v2/pnl/summary"
-        
-        # The wallet address goes in the query parameters
+        # BirdEye's PnL multiple endpoint (more reliable)
+        url = "https://public-api.birdeye.so/wallet/v2/pnl/multiple"
+
+        # The wallet addresses go in the query parameters (can send multiple, we send one)
         params = {
-            'address': wallet_address
+            'wallet_addresses': wallet_address  # Single wallet
         }
-        
+
         # BirdEye requires API key authentication in the headers
         headers = {
-            'X-API-KEY': BIRDEYE_API_KEY
+            'X-API-KEY': BIRDEYE_API_KEY,
+            'accept': 'application/json'
         }
-        
-        logger.info(f"📊 Fetching win rate from BirdEye for {wallet_address[:8]}...")
-        
+
+        logger.info(f"📊 Fetching win rate from BirdEye (v2/pnl/multiple) for {wallet_address[:8]}...")
+
         response = requests.get(url, params=params, headers=headers, timeout=10)
-        
+
+        # Log response for debugging
+        logger.info(f"  BirdEye PnL response status: {response.status_code}")
+
         # If BirdEye doesn't have data on this wallet, that's okay
         # It just means they haven't tracked this wallet's trades
         if response.status_code == 404:
             logger.info(f"ℹ️ BirdEye has no PnL data for {wallet_address[:8]}")
             return None
-        
-        response.raise_for_status()
+
+        if response.status_code != 200:
+            logger.warning(f"⚠️ BirdEye PnL API returned status {response.status_code}")
+            return None
+
         data = response.json()
-        
+
         # BirdEye returns success=false if something went wrong
         if not data.get('success', False):
             logger.warning(f"⚠️ BirdEye PnL API returned success=false for {wallet_address[:8]}")
             return None
-        
-        # The actual data is nested in a 'data' field
-        pnl_data = data.get('data', {})
-        
+
+        # The actual data is nested in a 'data' field, which contains wallet addresses as keys
+        pnl_data_wrapper = data.get('data', {})
+
+        if not pnl_data_wrapper:
+            logger.info(f"ℹ️ BirdEye returned empty PnL data wrapper for {wallet_address[:8]}")
+            return None
+
+        # Get data for our specific wallet address
+        pnl_data = pnl_data_wrapper.get(wallet_address, {})
+
         if not pnl_data:
             logger.info(f"ℹ️ BirdEye returned empty PnL data for {wallet_address[:8]}")
             return None
-        
+
         # Extract the total number of trades and winning trades
-        total_trades = pnl_data.get('total', 0)
-        winning_trades = pnl_data.get('win', 0)
-        
+        # The API might return these as 'total_trade' and 'win_trade' or similar
+        total_trades = pnl_data.get('total_trade', pnl_data.get('total', 0))
+        winning_trades = pnl_data.get('win_trade', pnl_data.get('win', 0))
+
+        logger.info(f"  Raw PnL data: total={total_trades}, win={winning_trades}")
+
         # If the wallet hasn't made any trades according to BirdEye, return None
         if total_trades == 0:
             logger.info(f"ℹ️ Wallet {wallet_address[:8]} has zero trades in BirdEye")
             return None
-        
+
         # Calculate win rate as a percentage
         # We clamp it between 0 and 100 to handle any data anomalies
         win_rate = (winning_trades / total_trades) * 100
         win_rate = max(0.0, min(100.0, win_rate))
-        
+
         logger.info(f"✅ Win rate for {wallet_address[:8]}: {win_rate:.1f}% ({winning_trades}/{total_trades} trades)")
-        
+
         return win_rate
         
     except requests.exceptions.Timeout:
@@ -345,37 +362,41 @@ def fetch_birdeye_trades_count(wallet_address: str) -> Optional[int]:
         Number of qualifying trades (value >= $50), or None if data unavailable
     """
     try:
-        # BirdEye's transaction history endpoint
-        url = "https://public-api.birdeye.so/trader/txs/seek_by_time"
-        
+        # BirdEye's wallet transaction list endpoint (v1)
+        url = "https://public-api.birdeye.so/v1/wallet/tx_list"
+
         # Calculate the time range: last 30 days
         # BirdEye expects Unix timestamps (seconds since epoch)
         now = int(time.time())
         thirty_days_ago = now - (30 * 24 * 60 * 60)
-        
+
         # Build the query parameters
         params = {
-            'address': wallet_address,
-            'from_time': thirty_days_ago,
-            'to_time': now,
-            'tx_type': 'swap',  # We only want swap transactions, not transfers or other tx types
-            'sort_type': 'desc',  # Most recent first
-            'limit': 1000  # Maximum number of transactions to retrieve
+            'wallet': wallet_address,
+            'tx_type': 'swap',  # We only want swap transactions
+            'before_time': now,
+            'limit': 100  # Get up to 100 recent transactions
         }
-        
+
         headers = {
-            'X-API-KEY': BIRDEYE_API_KEY
+            'X-API-KEY': BIRDEYE_API_KEY,
+            'accept': 'application/json'
         }
-        
-        logger.info(f"📊 Fetching trade count from BirdEye for {wallet_address[:8]}...")
-        
+
+        logger.info(f"📊 Fetching trade count from BirdEye (v1/wallet/tx_list) for {wallet_address[:8]}...")
+
         response = requests.get(url, params=params, headers=headers, timeout=15)
-        
+
+        logger.info(f"  BirdEye tx_list response status: {response.status_code}")
+
         if response.status_code == 404:
             logger.info(f"ℹ️ BirdEye has no transaction data for {wallet_address[:8]}")
             return None
-        
-        response.raise_for_status()
+
+        if response.status_code != 200:
+            logger.warning(f"⚠️ BirdEye tx_list API returned status {response.status_code}")
+            return None
+
         data = response.json()
         
         if not data.get('success', False):
@@ -384,23 +405,36 @@ def fetch_birdeye_trades_count(wallet_address: str) -> Optional[int]:
         
         # Transaction data is nested: data.items is an array of transactions
         items = data.get('data', {}).get('items', [])
-        
+
         if not items:
-            logger.info(f"ℹ️ No transactions found for {wallet_address[:8]} in last 30 days")
+            logger.info(f"ℹ️ No transactions found for {wallet_address[:8]}")
             return 0
-        
-        # Filter transactions to only count significant trades
-        # We ignore dust trades under $50 because they don't indicate real trading behavior
-        # They might be test transactions, airdrops, or spam
-        significant_trades = [
-            tx for tx in items 
-            if float(tx.get('value', 0)) >= 50.0
-        ]
-        
+
+        logger.info(f"  Retrieved {len(items)} transactions from BirdEye")
+
+        # Filter transactions to only count:
+        # 1. Transactions within last 30 days
+        # 2. Significant trades (value >= $50)
+        significant_trades = []
+        for tx in items:
+            # Get block time
+            block_time = tx.get('blockUnixTime', tx.get('block_time', 0))
+
+            # Skip if too old
+            if block_time < thirty_days_ago:
+                continue
+
+            # Get transaction value
+            value = float(tx.get('value', tx.get('amount', 0)))
+
+            # Count significant trades only (>= $50)
+            if value >= 50.0:
+                significant_trades.append(tx)
+
         trade_count = len(significant_trades)
-        
-        logger.info(f"✅ Trade count for {wallet_address[:8]}: {trade_count} trades (filtered from {len(items)} total)")
-        
+
+        logger.info(f"✅ Trade count for {wallet_address[:8]}: {trade_count} trades in last 30 days (filtered from {len(items)} total)")
+
         return trade_count
         
     except requests.exceptions.Timeout:
