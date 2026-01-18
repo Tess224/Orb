@@ -2191,13 +2191,14 @@ def clear_cache():
 # TOKEN HOLDERS ENDPOINT
 # ============================================================================
 
-def fetch_token_holders_birdeye(token_address: str, limit: int = 30) -> Dict:
+def fetch_token_holders_birdeye(token_address: str, limit: int = 30, include_supply: bool = False) -> Dict:
     """
     Fetches token holder data from BirdEye API.
 
     Args:
         token_address: Solana token mint address
         limit: Maximum number of holders to retrieve (default: 30)
+        include_supply: If True, also fetches total supply and calculates holding percentages
 
     Returns:
         Dictionary containing holder data with addresses and percentages
@@ -2235,6 +2236,26 @@ def fetch_token_holders_birdeye(token_address: str, limit: int = 30) -> Dict:
             if data.get('success'):
                 holders_data = data.get('data', {}).get('items', [])
 
+                # Fetch total supply if requested
+                total_supply = None
+                if include_supply:
+                    try:
+                        logger.info(f"📊 Fetching total supply for percentage calculation...")
+                        rpc_url = CHAINLINK_RPC or HELIUS_RPC
+                        if rpc_url:
+                            client = Client(rpc_url)
+                            token_pubkey = Pubkey.from_string(token_address)
+                            mint_info = client.get_account_info(token_pubkey, encoding='jsonParsed')
+
+                            if mint_info.value and mint_info.value.data:
+                                parsed_data = mint_info.value.data.parsed['info']
+                                raw_supply = parsed_data.get('supply', '0')
+                                decimals = parsed_data.get('decimals', 9)
+                                total_supply = float(raw_supply) / (10 ** decimals)
+                                logger.info(f"  ✓ Total supply: {total_supply:,.2f}")
+                    except Exception as e:
+                        logger.warning(f"  ⚠️ Could not fetch supply: {e}")
+
                 # Transform to frontend-friendly format
                 holders = []
                 for holder in holders_data[:limit]:
@@ -2243,22 +2264,36 @@ def fetch_token_holders_birdeye(token_address: str, limit: int = 30) -> Dict:
                     if not owner_address:
                         continue
 
-                    holders.append({
+                    ui_amount = holder.get('ui_amount', 0)
+
+                    holder_data = {
                         'address': owner_address,  # Owner wallet address (for analysis)
                         'token_account': holder.get('token_account', ''),  # SPL token account
-                        'uiAmount': holder.get('ui_amount', 0),  # Human-readable amount
+                        'uiAmount': ui_amount,  # Human-readable amount
                         'amount': holder.get('amount', '0'),  # Raw amount string
                         'decimals': holder.get('decimals', 0),
                         'mint': holder.get('mint', '')  # Token mint address
-                    })
+                    }
+
+                    # Calculate holding percentage if supply is available
+                    if total_supply and total_supply > 0 and ui_amount:
+                        holding_percent = (ui_amount / total_supply) * 100
+                        holder_data['holdingPercent'] = round(holding_percent, 4)
+
+                    holders.append(holder_data)
 
                 logger.info(f"  ✓ Retrieved {len(holders)} holders")
 
-                return {
+                result = {
                     'success': True,
                     'holders': holders,
                     'count': len(holders)
                 }
+
+                if total_supply:
+                    result['totalSupply'] = total_supply
+
+                return result
             else:
                 logger.warning(f"  ⚠️ BirdEye API returned success=false")
                 return {
@@ -2329,6 +2364,7 @@ def get_token_holders():
 
         token_address = data['token_address'].strip()
         limit = safe_int(data.get('limit', 30), default=30)
+        include_supply = data.get('include_supply', True)  # Default to True for better UX
 
         # Validate limit to prevent DoS
         if limit < 1 or limit > 100:
@@ -2346,16 +2382,30 @@ def get_token_holders():
                 'error': 'Invalid token address format'
             }), 400
 
-        logger.info(f"📥 Token holders request: {token_address[:8]}... (limit: {limit})")
+        logger.info(f"📥 Token holders request: {token_address[:8]}... (limit: {limit}, include_supply: {include_supply})")
 
-        # Fetch holders from BirdEye
-        result = fetch_token_holders_birdeye(token_address, limit)
+        # Fetch holders from BirdEye (with optional supply calculation)
+        result = fetch_token_holders_birdeye(token_address, limit, include_supply)
 
         # Add timestamp
         result['timestamp'] = int(time.time())
 
         if result['success']:
             logger.info(f"✅ Token holders retrieved: {token_address[:8]} → {result['count']} holders")
+
+            # Log sample holder data for debugging
+            if result['holders'] and len(result['holders']) > 0:
+                sample = result['holders'][0]
+                logger.info(f"  📋 Sample holder data:")
+                logger.info(f"     address: {sample.get('address', 'N/A')[:12]}...")
+                logger.info(f"     uiAmount: {sample.get('uiAmount', 'N/A')}")
+                if 'holdingPercent' in sample:
+                    logger.info(f"     holdingPercent: {sample.get('holdingPercent')}%")
+                logger.info(f"     decimals: {sample.get('decimals', 'N/A')}")
+                logger.info(f"     mint: {sample.get('mint', 'N/A')[:12]}...")
+                if 'totalSupply' in result:
+                    logger.info(f"  📊 Total supply: {result['totalSupply']:,.2f}")
+
             return jsonify(result), 200
         else:
             logger.warning(f"⚠️ Failed to retrieve holders: {result.get('error')}")
