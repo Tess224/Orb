@@ -3949,6 +3949,123 @@ def test_push_notification():
             'error': str(e)
         }), 500
 
+
+# ============================================================================
+# MARKETPLACE - Token Discovery
+# ============================================================================
+
+@app.route('/marketplace/tokens', methods=['GET'])
+@limiter.limit("30 per minute")
+def get_marketplace_tokens():
+    """
+    Get list of meme tokens from Birdeye API.
+
+    Query parameters:
+    - limit: Number of tokens to return (default: 50, max: 100)
+    - offset: Pagination offset (default: 0)
+    - sort_by: Sort field (volume_24h, liquidity, market_cap, popularity_score)
+    - sort_type: Sort order (asc or desc, default: desc)
+    - min_liquidity: Minimum liquidity filter
+    - min_volume_24h: Minimum 24h volume filter
+    """
+    try:
+        if not BIRDEYE_API_KEY:
+            return jsonify({
+                'success': False,
+                'error': 'Birdeye API not configured'
+            }), 503
+
+        # Security: Safe parameter parsing with limits
+        limit = safe_int(request.args.get('limit', 50), default=50)
+        limit = min(100, max(1, limit))  # Clamp between 1-100
+
+        offset = safe_int(request.args.get('offset', 0), default=0)
+        offset = max(0, offset)  # Must be non-negative
+
+        sort_by = request.args.get('sort_by', 'volume_24h')
+        allowed_sorts = ['volume_24h', 'liquidity', 'market_cap', 'popularity_score']
+        if sort_by not in allowed_sorts:
+            sort_by = 'volume_24h'
+
+        sort_type = request.args.get('sort_type', 'desc')
+        if sort_type not in ['asc', 'desc']:
+            sort_type = 'desc'
+
+        # Optional filters
+        min_liquidity = request.args.get('min_liquidity')
+        min_volume_24h = request.args.get('min_volume_24h')
+
+        # Build API request
+        url = 'https://public-api.birdeye.so/defi/v3/token/meme/list'
+        headers = {
+            'X-API-KEY': BIRDEYE_API_KEY,
+            'Accept': 'application/json'
+        }
+
+        params = {
+            'limit': limit,
+            'offset': offset,
+            'sort_by': sort_by,
+            'sort_type': sort_type
+        }
+
+        if min_liquidity:
+            params['min_liquidity'] = min_liquidity
+        if min_volume_24h:
+            params['min_volume_24h'] = min_volume_24h
+
+        # Make request to Birdeye
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+
+            # Transform response to match frontend expectations
+            tokens = []
+            if data.get('success') and data.get('data', {}).get('tokens'):
+                for token in data['data']['tokens']:
+                    tokens.append({
+                        'address': token.get('address'),
+                        'name': token.get('name'),
+                        'symbol': token.get('symbol'),
+                        'logo': token.get('logo_uri'),
+                        'price': token.get('price'),
+                        'price_change_24h': token.get('price_change_24h_percent'),
+                        'volume_24h': token.get('volume_24h'),
+                        'liquidity': token.get('liquidity'),
+                        'market_cap': token.get('market_cap'),
+                        'holders': token.get('holder_count'),
+                        'popularity_score': token.get('popularity_score'),
+                        'platform': token.get('platform'),  # pump_dot_fun, raydium_launchlab, etc.
+                        'created_at': token.get('created_at')
+                    })
+
+            return jsonify({
+                'success': True,
+                'count': len(tokens),
+                'total': data.get('data', {}).get('total', 0),
+                'tokens': tokens
+            }), 200
+        else:
+            logger.error(f"Birdeye API error: {response.status_code} - {response.text}")
+            return jsonify({
+                'success': False,
+                'error': f'Birdeye API error: {response.status_code}'
+            }), response.status_code
+
+    except requests.Timeout:
+        logger.error("Birdeye API timeout")
+        return jsonify({
+            'success': False,
+            'error': 'Request timeout'
+        }), 504
+    except Exception as e:
+        logger.error(f"Error fetching marketplace tokens: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 # ============================================================================
 # INITIALIZATION - This runs when Gunicorn imports the file
 # ============================================================================
