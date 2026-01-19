@@ -29,6 +29,7 @@ from typing import Dict, List, Optional
 from pathlib import Path
 from dataclasses import dataclass
 import time
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -221,10 +222,10 @@ class WebPushService:
     def send_alert_notification(self, alert) -> int:
         """
         Send a push notification for a MetricAlert.
-        
+
         Args:
             alert: MetricAlert object
-        
+
         Returns:
             Number of successful sends
         """
@@ -235,10 +236,14 @@ class WebPushService:
             'medium': '📊',
             'low': 'ℹ️'
         }.get(alert.severity, '📊')
-        
+
+        # Format timestamp as HH:MM
+        alert_time = datetime.fromtimestamp(alert.timestamp).strftime('%H:%M')
+
         title = f"{emoji} ORB Alert: {alert.token_address[:8]}..."
-        body = alert.message
-        
+        # Add timestamp to the beginning of the message
+        body = f"[{alert_time}] {alert.message}"
+
         return self.send_notification(
             title=title,
             body=body,
@@ -247,7 +252,8 @@ class WebPushService:
             data={
                 'alert_type': alert.alert_type,
                 'details': alert.details,
-                'changes': alert.changes
+                'changes': alert.changes,
+                'time': alert_time
             }
         )
     
