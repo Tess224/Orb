@@ -3967,6 +3967,12 @@ def get_marketplace_tokens():
     - sort_type: Sort order (asc or desc, default: desc)
     - min_liquidity: Minimum liquidity filter
     - min_volume_24h: Minimum 24h volume filter
+
+    Returns token info including:
+    - name, symbol, address, logo
+    - market_cap, liquidity, volume_24h
+    - is_graduated: whether token graduated from bonding curve
+    - twitter: Twitter/X URL if available
     """
     try:
         if not BIRDEYE_API_KEY:
@@ -4024,6 +4030,12 @@ def get_marketplace_tokens():
             tokens = []
             if data.get('success') and data.get('data', {}).get('tokens'):
                 for token in data['data']['tokens']:
+                    # Extract Twitter URL from extensions if available
+                    twitter_url = None
+                    extensions = token.get('extensions', {})
+                    if isinstance(extensions, dict):
+                        twitter_url = extensions.get('twitter') or extensions.get('website_twitter')
+
                     tokens.append({
                         'address': token.get('address'),
                         'name': token.get('name'),
@@ -4037,7 +4049,9 @@ def get_marketplace_tokens():
                         'holders': token.get('holder_count'),
                         'popularity_score': token.get('popularity_score'),
                         'platform': token.get('platform'),  # pump_dot_fun, raydium_launchlab, etc.
-                        'created_at': token.get('created_at')
+                        'created_at': token.get('created_at'),
+                        'is_graduated': token.get('is_graduated', False),
+                        'twitter': twitter_url
                     })
 
             return jsonify({
