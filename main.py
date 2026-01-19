@@ -4010,9 +4010,7 @@ def get_marketplace_tokens():
 
         params = {
             'limit': limit,
-            'offset': offset,
-            'sort_by': sort_by,
-            'sort_type': sort_type
+            'offset': offset
         }
 
         if min_liquidity:
