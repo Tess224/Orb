@@ -554,7 +554,7 @@ class MetricAlertManager:
         """Get recent alerts for a token."""
         alerts = self.alerts_per_token.get(token_address, [])
         alerts = alerts[-limit:]
-        
+
         return [{
             'timestamp': a.timestamp,
             'alert_type': a.alert_type,
@@ -562,6 +562,7 @@ class MetricAlertManager:
             'message': a.message,
             'details': a.details,
             'changes': a.changes,
+            'time': datetime.fromtimestamp(a.timestamp).strftime('%H:%M'),
             'time_ago': self._time_ago(a.timestamp)
         } for a in alerts]
     
