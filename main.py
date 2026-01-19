@@ -4012,7 +4012,7 @@ def get_marketplace_tokens():
             'limit': limit,
             'offset': offset,
             'sort_by': 'market_cap',  # Must be a valid enum string
-            'sort_type': 'desc',   
+            'sort_type': 'desc'
         }
 
         if min_liquidity:
