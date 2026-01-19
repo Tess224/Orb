@@ -182,6 +182,13 @@ class WebPushService:
                     continue
             
             try:
+                # Set headers for better delivery
+                headers = {
+                    'Urgency': 'high',  # high, normal, low, very-low
+                    'TTL': '86400',  # 24 hours in seconds
+                    'Topic': f'orb-alert-{token_address}' if token_address else 'orb-alert'
+                }
+
                 webpush(
                     subscription_info={
                         'endpoint': subscription.endpoint,
@@ -189,7 +196,9 @@ class WebPushService:
                     },
                     data=payload,
                     vapid_private_key=self.vapid_private_key,
-                    vapid_claims=vapid_claims
+                    vapid_claims=vapid_claims,
+                    headers=headers,
+                    timeout=10  # Request timeout
                 )
                 successful += 1
                 logger.debug(f"✅ Push sent to {subscription.endpoint[:30]}...")
