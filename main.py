@@ -19,6 +19,7 @@ import asyncio
 import threading
 
 from solana.rpc.api import Client
+from solana.rpc.types import TokenAccountOpts
 from solders.pubkey import Pubkey
 from solders.signature import Signature
 from birdeye_trade_collector import BirdeyeTradeCollector
@@ -544,8 +545,7 @@ def fetch_parsed_transactions_batch(signatures: List[str], rpc_url: str) -> List
                 sig_object = Signature.from_string(sig)
                 tx_response = client.get_transaction(
                     sig_object,
-
-                    encoding="jsonParsed",
+                    encoding="json",
                     max_supported_transaction_version=0
                 )
                 
@@ -649,12 +649,16 @@ def parse_wallet_trades_from_transactions(
             
             # Find the account index for our wallet in the transaction
             # Transactions involve multiple accounts, we need to find ours
-            transaction = getattr(tx, 'transaction', None)
-            if not transaction:
+            # With json encoding, the transaction has a message attribute containing account_keys
+            message = getattr(transaction_data, 'message', None)
+            if not message:
                 continue
-            account_keys = transaction_data.message.account_keys
+
+            account_keys = getattr(message, 'account_keys', [])
+            if not account_keys:
+                continue
+
             wallet_index = None
-            
             for i, key in enumerate(account_keys):
                 if str(key) == wallet_address:
                     wallet_index = i
@@ -974,10 +978,9 @@ def calculate_wallet_iq(
             wallet_pubkey = Pubkey.from_string(wallet_address)
             token_program = Pubkey.from_string('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
 
-            response = client.get_token_accounts_by_owner(
+            response = client.get_token_accounts_by_owner_json_parsed(
                 wallet_pubkey,
-                {"programId": token_program},
-                {"encoding": "jsonParsed"}
+                TokenAccountOpts(program_id=token_program)
             )
 
             if response.value:
